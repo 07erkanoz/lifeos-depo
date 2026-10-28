@@ -104,13 +104,14 @@ jobs:
           printf '%s\n' "$ANAHTAR" | gpg --import
           ANAHTAR_KIMLIGI=$(gpg --with-colons --list-secret-keys | awk -F: '/^fpr/ {print $10; exit}')
 
-          mkdir depo && cd depo
+          # The work folder lives outside the checkout: LifeOSLinux has a depo/ folder of its own (these workflows).
+          is=$RUNNER_TEMP/yayin; mkdir -p "$is"; echo "IS=$is" >> "$GITHUB_ENV"; cd "$is"
           gh release view depo --repo "$DEPO" >/dev/null 2>&1 || \
             gh release create depo --repo "$DEPO" --title "LifeOS paket deposu" --latest=false \
               --notes "pacman deposu: Server = https://github.com/$DEPO/releases/download/depo"
           gh release download depo --repo "$DEPO" --pattern 'lifeos.db.tar.gz*' --pattern 'lifeos.files.tar.gz*' || true
 
-          for paket in ../packaging/${{ steps.paket.outputs.paket }}/*.pkg.tar.zst; do
+          for paket in "$GITHUB_WORKSPACE"/packaging/${{ steps.paket.outputs.paket }}/*.pkg.tar.zst; do
             cp "$paket" .
             gpg --batch --detach-sign --no-armor -u "$ANAHTAR_KIMLIGI" "$(basename "$paket")"
           done
@@ -132,7 +133,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ETIKET: ${{ steps.paket.outputs.etiket }}
         run: |
-          cd depo
+          cd "$IS"
           gh release create "$ETIKET" --repo "$DEPO" --title "$ETIKET" --latest=false \
             --notes "$(git -C "$GITHUB_WORKSPACE" tag -l --format='%(contents)' "$ETIKET")" \
             ./*.pkg.tar.zst ./*.pkg.tar.zst.sig
