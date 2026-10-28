@@ -1,0 +1,138 @@
+# LifeOS paketleri, açık paket deposunda (lifeos-depo) çalışır: GitHub açık depolarda Actions'ı ücretsiz verir, gizli
+# kaynak deposunun (LifeOSLinux) aylık kotası ise doldu (28.10.2026). Bu dosyanın kaynağı LifeOSLinux'ta
+# depo/.github/workflows/paketler.yml; `tools/depo_is_akisi.sh` buraya taşır (docs/paketler.md).
+#
+# Paketi LifeOSLinux'tan, verilen etikette (ör. lifeos-v0.1.0-7) ya da dalda derler, LifeOS anahtarıyla imzalar ve bu
+# deponun "depo" sürümüne koyar; pacman şuradan indirir: https://github.com/<bu depo>/releases/download/depo
+# Başlatan: `python3 tools/yayinla.py <paket>` (etiketi gönderir, bu işi çalıştırır, bitmesini bekler).
+#
+# Gerekenler (tools/depo_sirlari.sh hazırlar):
+#   sır LIFEOS_PAKET_ANAHTARI   imza anahtarının gizli kısmı (ASCII)
+#   sır LIFEOS_PAKET_PAROLASI   anahtarın parolası
+#   sır LIFEOS_KAYNAK_TOKEN     LifeOSLinux'u okuyabilen token (yalnız o depo; site sürümleri için yazma da)
+
+name: LifeOS paketleri
+
+on:
+  workflow_dispatch:
+    inputs:
+      paket:
+        description: 'Paket (lifeos, lifeos-yonetim, lifeos-sistem, lifeos-magaza, lifeos-karsilama, lifeos-paneller, lifeos-konsol, lifeos-keyring, lifeos-folio, lifeos-ofis, pardus-idevice-mounter)'
+        required: true
+      ref:
+        description: "LifeOSLinux'ta etiket ya da dal (ör. lifeos-v0.1.0-7)"
+        required: true
+        default: main
+
+permissions:
+  contents: write   # bu deponun sürümlerine paket koymak için
+
+# Depo veritabanını aynı anda iki iş değiştirmesin. Bir grupta 1 çalışan + 1 bekleyen durur; üçüncüsü bekleyeni
+# iptal eder, bu yüzden tools/yayinla.py paketleri tek tek, bir öncekinin bitmesini bekleyerek başlatır.
+concurrency:
+  group: lifeos-depo
+  cancel-in-progress: false
+
+jobs:
+  paket:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    defaults:
+      run:
+        shell: bash
+    env:
+      DEPO: ${{ github.repository }}
+    steps:
+      - name: Araçlar
+        run: pacman -Syu --noconfirm --needed git github-cli python pacman-contrib
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.LIFEOS_KAYNAK || '07erkanoz/LifeOSLinux' }}
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.LIFEOS_KAYNAK_TOKEN }}
+
+      - name: Hangi paket, hangi sürüm
+        id: paket
+        env:
+          PAKET: ${{ inputs.paket }}
+          REF: ${{ inputs.ref }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          paket=$PAKET; surum=
+          [[ $REF == "$paket-v"* ]] && surum=${REF##*-v}
+          [[ $paket =~ ^[a-z0-9-]+$ && -f packaging/$paket/PKGBUILD ]] || { echo "::error::packaging/$paket/PKGBUILD yok"; exit 1; }
+          python3 tools/surum.py || { echo "::error::Kaynaktaki sürüm ile PKGBUILD tutmuyor"; exit 1; }
+          pkgver=$(sed -n 's/^pkgver=//p' "packaging/$paket/PKGBUILD"); pkgrel=$(sed -n 's/^pkgrel=//p' "packaging/$paket/PKGBUILD")
+          if [[ -n $surum && $surum != "$pkgver" && $surum != "$pkgver-$pkgrel" ]]; then
+            echo "::error::Etiket $surum diyor, PKGBUILD $pkgver-$pkgrel"; exit 1
+          fi
+          echo "paket=$paket" >> "$GITHUB_OUTPUT"
+          [[ -n $surum ]] && echo "etiket=$REF" >> "$GITHUB_OUTPUT" || true
+
+      - name: LifeOS deposu
+        # Some packages depend on others of ours (lifeos-yonetim on lifeos): the build container trusts the LifeOS key
+        # from this checkout and adds [lifeos] as an installed system has it (lifeos_store/depo.py).
+        run: |
+          pacman-key --init
+          pacman-key --add packaging/lifeos-keyring/lifeos.gpg
+          pacman-key --lsign-key "$(cut -d: -f1 packaging/lifeos-keyring/lifeos-trusted)"
+          python3 -c 'import sys; sys.path.insert(0, "."); from lifeos_store.depo import enable; enable()'
+          pacman -Sy --noconfirm
+
+      - name: Derle
+        run: |
+          useradd -m derleyici
+          echo 'derleyici ALL=(ALL) NOPASSWD: /usr/bin/pacman' > /etc/sudoers.d/derleyici
+          chown -R derleyici "$GITHUB_WORKSPACE"
+          cd "packaging/${{ steps.paket.outputs.paket }}"
+          sudo -u derleyici makepkg --syncdeps --noconfirm --cleanbuild --nocheck
+          ls -l ./*.pkg.tar.zst
+
+      - name: İmzala ve depoya koy
+        env:
+          ANAHTAR: ${{ secrets.LIFEOS_PAKET_ANAHTARI }}
+          PAROLA: ${{ secrets.LIFEOS_PAKET_PAROLASI }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ -n $ANAHTAR ]] || { echo "::error::LIFEOS_PAKET_ANAHTARI sırrı yok: tools/depo_sirlari.sh"; exit 1; }
+          export GNUPGHOME=$(mktemp -d); chmod 700 "$GNUPGHOME"
+          umask 077; printf '%s' "$PAROLA" > "$GNUPGHOME/parola"; umask 022
+          # No "batch" here: in batch mode gpg does not find a detached signature's file, and repo-add --verify fails.
+          printf 'pinentry-mode loopback\npassphrase-file %s\n' "$GNUPGHOME/parola" > "$GNUPGHOME/gpg.conf"
+          echo allow-loopback-pinentry > "$GNUPGHOME/gpg-agent.conf"
+          printf '%s\n' "$ANAHTAR" | gpg --import
+          ANAHTAR_KIMLIGI=$(gpg --with-colons --list-secret-keys | awk -F: '/^fpr/ {print $10; exit}')
+
+          mkdir depo && cd depo
+          gh release view depo --repo "$DEPO" >/dev/null 2>&1 || \
+            gh release create depo --repo "$DEPO" --title "LifeOS paket deposu" --latest=false \
+              --notes "pacman deposu: Server = https://github.com/$DEPO/releases/download/depo"
+          gh release download depo --repo "$DEPO" --pattern 'lifeos.db.tar.gz*' --pattern 'lifeos.files.tar.gz*' || true
+
+          for paket in ../packaging/${{ steps.paket.outputs.paket }}/*.pkg.tar.zst; do
+            cp "$paket" .
+            gpg --batch --detach-sign --no-armor -u "$ANAHTAR_KIMLIGI" "$(basename "$paket")"
+          done
+          repo-add --sign --key "$ANAHTAR_KIMLIGI" --verify lifeos.db.tar.gz ./*.pkg.tar.zst
+          # Release dosyaları bağlantı olamaz: pacman'ın istediği lifeos.db, lifeos.db.tar.gz'nin kopyasıdır.
+          for db in db files; do
+            cp -L "lifeos.$db.tar.gz" "lifeos.$db.yeni"; mv -f "lifeos.$db.yeni" "lifeos.$db"
+            rm -f "lifeos.$db.sig"  # repo-add made it a link to the .tar.gz.sig: cp would copy the file onto itself
+            cp -L "lifeos.$db.tar.gz.sig" "lifeos.$db.sig"
+          done
+          gh release upload depo --repo "$DEPO" --clobber ./*.pkg.tar.zst ./*.pkg.tar.zst.sig \
+            lifeos.db lifeos.db.sig lifeos.db.tar.gz lifeos.db.tar.gz.sig \
+            lifeos.files lifeos.files.sig lifeos.files.tar.gz lifeos.files.tar.gz.sig
+          rm -rf "$GNUPGHOME"
+
+      - name: Sürüm notu
+        if: steps.paket.outputs.etiket != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ETIKET: ${{ steps.paket.outputs.etiket }}
+        run: |
+          cd depo
+          gh release create "$ETIKET" --repo "$DEPO" --title "$ETIKET" --latest=false \
+            --notes "$(git -C "$GITHUB_WORKSPACE" tag -l --format='%(contents)' "$ETIKET")" \
+            ./*.pkg.tar.zst ./*.pkg.tar.zst.sig

@@ -1,8 +1,0 @@
-# Bir kez: Actions bu açık depoda çalışıyor mu (LifeOSLinux'un gizli depo kotası doldu). Sonra silinir.
-name: Deneme
-on: workflow_dispatch
-jobs:
-  deneme:
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "Açık depoda Actions çalışıyor"
