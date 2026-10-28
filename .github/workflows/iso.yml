@@ -1,0 +1,101 @@
+# LifeOS ISO, açık paket deposunda (lifeos-depo) derlenir: GitHub açık depolarda Actions'ı ücretsiz verir, kaynak
+# (LifeOSLinux) gizli kalır. Bu dosyanın kaynağı LifeOSLinux'ta depo/.github/workflows/iso.yml; `tools/depo_is_akisi.sh`
+# buraya taşır (docs/paketler.md).
+#
+# ISO, ev bağlantısına hiç uğramadan GitHub'ın makinesinde derlenir ve bu deponun "iso-…" sürümüne konur. GitHub bir
+# sürüm dosyasını en çok 2 GB kabul eder: ISO iki parçadır, sürüm notu Windows'ta ve Linux'ta birleştirmeyi anlatır.
+# LifeOS'un kendi paketleri (Calamares, Konsol, anahtar, temalar) imzalı [lifeos] deposundan gelir.
+#
+# Başlatan: `gh workflow run iso.yml --repo 07erkanoz/lifeos-depo -f ref=main` ya da Actions sekmesindeki düğme.
+# Gerekenler: sır LIFEOS_KAYNAK_TOKEN (LifeOSLinux'u okuyabilen token; paketler.yml ile aynı).
+
+name: LifeOS ISO
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "LifeOSLinux'ta dal ya da etiket"
+        required: true
+        default: main
+
+permissions:
+  contents: write   # bu deponun sürümlerine ISO koymak için
+
+concurrency:
+  group: lifeos-iso
+  cancel-in-progress: false
+
+jobs:
+  iso:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    # mkarchiso kurulacak sistemi bağlama noktalarıyla kurar: konteyner yetkili olmalı. Çalışma klasörü makinenin geniş
+    # ikinci diskinde (/mnt): ISO derlemesi ~10 GB ister, kök diskte o kadar yer yok.
+    container:
+      image: archlinux:latest
+      options: --privileged
+      volumes:
+        - /mnt:/mnt
+    defaults:
+      run:
+        shell: bash
+    env:
+      DEPO: ${{ github.repository }}
+    steps:
+      - name: Araçlar
+        run: pacman -Syu --noconfirm --needed archiso git github-cli python sudo mtools
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.LIFEOS_KAYNAK || '07erkanoz/LifeOSLinux' }}
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.LIFEOS_KAYNAK_TOKEN }}
+
+      - name: LifeOS anahtarı
+        # [lifeos]'tan gelen paketler imzalı: derleyen pacman LifeOS anahtarına güvenmeli (paketler.yml ile aynı).
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          pacman-key --init
+          pacman-key --add packaging/lifeos-keyring/lifeos.gpg
+          pacman-key --lsign-key "$(cut -d: -f1 packaging/lifeos-keyring/lifeos-trusted)"
+          df -h / /mnt
+
+      - name: Profil
+        run: python3 tools/prepare_profile.py --output /mnt/profil --lifeos-deposu
+
+      - name: ISO
+        run: python3 tools/build_iso.py --profile /mnt/profil --work /mnt/is --output /mnt/cikti
+
+      - name: Sürüme koy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ inputs.ref }}
+        run: |
+          cd /mnt/cikti
+          iso=$(ls ./*.iso | head -1); iso=${iso#./}
+          sha256sum "$iso" > "$iso.sha256"
+          split -b 1900M -d -a 1 "$iso" "$iso.parca"
+          rm -f "$iso"
+          kaynak=$(git -C "$GITHUB_WORKSPACE" rev-parse --short HEAD)
+          etiket="iso-$(date -u +%Y%m%d-%H%M)"
+          parcalar=$(ls "$iso".parca* | tr '\n' ' ')
+          notlar="LifeOS geliştirme ISO'su: kaynak $REF ($kaynak), $(date -u '+%d.%m.%Y %H:%M') UTC.
+
+          GitHub bir dosyayı en çok 2 GB kabul ettiği için ISO iki parçadır. İkisini de indirip birleştirin:
+
+          **Windows** (indirdiğiniz klasörde PowerShell ya da Komut İstemi):
+          \`\`\`
+          cmd /c copy /b $iso.parca0 + $iso.parca1 $iso
+          certutil -hashfile $iso SHA256
+          \`\`\`
+          **Linux:** \`cat $iso.parca* > $iso && sha256sum -c $iso.sha256\`
+
+          Çıkan özet \`$iso.sha256\` dosyasındakiyle aynı olmalı. Sonra Rufus ile USB'ye yazın (sorarsa \"DD kipi\").
+          Secure Boot kapalı olmalı."
+          gh release create "$etiket" --repo "$DEPO" --title "LifeOS ISO $(date -u +%d.%m.%Y)" --prerelease \
+            --notes "$notlar" $parcalar "$iso.sha256"
+          # Eskiler yer kaplamasın: son üç ISO sürümü kalır.
+          gh release list --repo "$DEPO" --limit 100 --json tagName -q '.[].tagName' | grep '^iso-' | sort -r | tail -n +4 |
+            while read -r eski; do gh release delete "$eski" --repo "$DEPO" --yes --cleanup-tag; done
+          echo "ISO: https://github.com/$DEPO/releases/tag/$etiket"
