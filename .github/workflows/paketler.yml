@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       paket:
-        description: 'Paket (lifeos, lifeos-yonetim, lifeos-sistem, lifeos-magaza, lifeos-karsilama, lifeos-paneller, lifeos-konsol, lifeos-izin, lifeos-temalar, lifeos-destek-ekibi, lifeos-keyring, lifeos-folio, lifeos-ofis, lifeos-zsh, calamares, orchis-kde-theme, win11-icon-theme, pardus-idevice-mounter)'
+        description: 'Paket (lifeos, lifeos-yonetim, lifeos-sistem, lifeos-magaza, lifeos-karsilama, lifeos-paneller, lifeos-masaustu, lifeos-konsol, lifeos-izin, lifeos-temalar, lifeos-destek-ekibi, lifeos-keyring, lifeos-folio, lifeos-ofis, lifeos-zsh, calamares, orchis-kde-theme, win11-icon-theme, pardus-idevice-mounter)'
         required: true
       ref:
         description: "LifeOSLinux'ta etiket ya da dal (ör. lifeos-v0.1.0-7)"
