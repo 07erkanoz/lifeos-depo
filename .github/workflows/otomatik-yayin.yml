@@ -1,0 +1,77 @@
+# Otomatik yayın: LifeOSLinux'un main dalında sürümü yükseltilen her paket, kurulu bilgisayarlara kendiliğinden gider.
+# Saatte bir [lifeos] deposunun veritabanını (lifeos.db) main'deki PKGBUILD'lerle karşılaştırır
+# (tools/otomatik_yayin.py); daha yeni ya da depoda hiç olmayan her paketi "LifeOS paketleri" ile, biri bitince
+# öteki olmak üzere derletir. Mağaza'nın Güncellemeler'i ve `pacman -Syu` onları oradan alır (docs/paketler.md).
+# Bu dosyanın kaynağı LifeOSLinux'ta depo/.github/workflows/otomatik-yayin.yml; `tools/depo_is_akisi.sh` taşır.
+
+name: Otomatik yayın
+
+on:
+  schedule:
+    - cron: '41 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write    # paketler.yml'yi başlatmak için
+  contents: read
+
+concurrency:
+  group: otomatik-yayin
+  cancel-in-progress: false
+
+jobs:
+  yayinla:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    container: archlinux:base
+    defaults:
+      run:
+        shell: bash
+    env:
+      DEPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Araçlar
+        run: pacman -Syu --noconfirm --needed git github-cli python
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.LIFEOS_KAYNAK || '07erkanoz/LifeOSLinux' }}
+          ref: main
+          token: ${{ secrets.LIFEOS_KAYNAK_TOKEN }}
+
+      - name: Yeni sürümler
+        id: liste
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          gh release download depo --repo "$DEPO" --pattern lifeos.db --dir "$RUNNER_TEMP"
+          paketler=$(python3 tools/otomatik_yayin.py "$RUNNER_TEMP/lifeos.db")
+          echo "paketler=$(echo $paketler)" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "Yayımlanacak: ${paketler:-yok}"
+
+      - name: Derlet
+        if: steps.liste.outputs.paketler != ''
+        env:
+          SHA: ${{ steps.liste.outputs.sha }}
+        run: |
+          # Hepsi aynı commit'ten; "LifeOS paketleri" bir seferde bir paket derler, bu yüzden her biri beklenir.
+          hata=
+          for paket in ${{ steps.liste.outputs.paketler }}; do
+            basla=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            gh workflow run paketler.yml --repo "$DEPO" -f paket="$paket" -f ref="$SHA"
+            id=
+            for _ in $(seq 60); do
+              sleep 5
+              id=$(gh run list --repo "$DEPO" --workflow paketler.yml --event workflow_dispatch --limit 10 \
+                     --json databaseId,createdAt -q "[.[] | select(.createdAt >= \"$basla\")] | last | .databaseId // empty")
+              [[ -n $id ]] && break
+            done
+            if [[ -z $id ]]; then echo "::error::$paket: derleme başlamadı"; hata=1; continue; fi
+            if gh run watch "$id" --repo "$DEPO" --exit-status --interval 30 > /dev/null; then
+              echo "$paket yayımlandı (https://github.com/$DEPO/actions/runs/$id)"
+            else
+              echo "::error::$paket derlenemedi: https://github.com/$DEPO/actions/runs/$id"; hata=1
+            fi
+          done
+          [[ -z $hata ]]

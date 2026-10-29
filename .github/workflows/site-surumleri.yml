@@ -1,6 +1,6 @@
 # LifeOS Folio ve Ofis lifeos.com.tr'de yayımlanır; bu iş günde iki kez sitenin imzalı sürüm bilgisine bakar.
 # Sitede daha yeni bir sürüm varsa tools/site_surum.py LifeOSLinux'taki PKGBUILD'i (sürüm, adres, SHA-256) günceller,
-# değişiklik LifeOSLinux'a commit edilir ve "LifeOS paketleri" o paketi derleyip [lifeos] deposuna koyar. Mağaza da
+# değişiklik LifeOSLinux'a commit edilir; "Otomatik yayın" bir saat içinde o paketi derletip [lifeos] deposuna koyar. Mağaza da
 # kullanıcıya güncellemeyi bildirir (docs/paketler.md · Site sürümleri). lifeos-zsh de aynı yolla Arch'ın zsh'ini izler.
 # Açık depoda çalışır (Actions ücretsiz);
 # kaynağı LifeOSLinux'ta depo/.github/workflows/site-surumleri.yml.
@@ -12,8 +12,7 @@ on:
     - cron: '17 6,15 * * *'
   workflow_dispatch:
 
-permissions:
-  actions: write   # paketler.yml'yi başlatmak için
+permissions: {}   # yazma LifeOSLinux'a, LIFEOS_KAYNAK_TOKEN ile
 
 concurrency:
   group: site-surumleri
@@ -36,10 +35,8 @@ jobs:
           degisen=$(python3 tools/site_surum.py --guncelle)
           echo "paketler=$(echo $degisen)" >> "$GITHUB_OUTPUT"
 
-      - name: Commit et ve derlet
+      - name: Commit et
         if: steps.site.outputs.paketler != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           git config user.name 'LifeOS paketleri'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
@@ -48,7 +45,4 @@ jobs:
             git commit -q -m "$paket $surum-1: kaynağın yeni sürümü" -- "packaging/$paket/PKGBUILD"
           done
           git push
-          # En çok üç paket (Folio, Ofis, zsh): biri çalışır, biri sırada bekler; üçüncüsü bir sonraki denetime kalabilir.
-          for paket in ${{ steps.site.outputs.paketler }}; do
-            gh workflow run paketler.yml --repo "$GITHUB_REPOSITORY" -f paket="$paket" -f ref=main
-          done
+          # Derleme "Otomatik yayın"da (otomatik-yayin.yml): aynı anda iki iş paket derletip birbirini iptal etmesin.
