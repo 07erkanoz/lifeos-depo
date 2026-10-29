@@ -10,6 +10,11 @@ on:
   schedule:
     - cron: '41 * * * *'
   workflow_dispatch:
+  # "Hemen yayınla": a push that changes yayin/istek in this repository. GitHub's schedule is best effort (on
+  # 29.10.2026 it did not run the first three hours at all), and a push is allowed where starting a workflow is not.
+  push:
+    branches: [main]
+    paths: ['yayin/istek']
 
 permissions:
   actions: write    # paketler.yml'yi başlatmak için
