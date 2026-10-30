@@ -3,7 +3,7 @@
 # buraya taşır (docs/paketler.md).
 #
 # ISO, ev bağlantısına hiç uğramadan GitHub'ın makinesinde derlenir ve bu deponun "iso-…" sürümüne konur. GitHub bir
-# sürüm dosyasını en çok 2 GB kabul eder: ISO iki parçadır, sürüm notu Windows'ta ve Linux'ta birleştirmeyi anlatır.
+# sürüm dosyasını en çok 2 GB kabul eder: ISO parçalara bölünür, sürüm notu Windows'ta ve Linux'ta birleştirmeyi anlatır.
 # LifeOS'un kendi paketleri (Calamares, Konsol, anahtar, temalar) imzalı [lifeos] deposundan gelir.
 #
 # Başlatan: `gh workflow run iso.yml --repo 07erkanoz/lifeos-depo -f ref=main` ya da Actions sekmesindeki düğme.
@@ -80,13 +80,16 @@ jobs:
           kaynak=$(git -C "$GITHUB_WORKSPACE" rev-parse --short HEAD)
           etiket="iso-$(date -u +%Y%m%d-%H%M)"
           parcalar=$(ls "$iso".parca* | tr '\n' ' ')
+          # 30.10.2026: the ISO grew past 3.8 GB and became three parts; the note said two and joined only parca0+parca1.
+          sayi=$(ls "$iso".parca* | wc -l)
+          birlestir=$(ls "$iso".parca* | sed 's/$/ +/' | tr '\n' ' ' | sed 's/ + $//')
           notlar="LifeOS geliştirme ISO'su: kaynak $REF ($kaynak), $(date -u '+%d.%m.%Y %H:%M') UTC.
 
-          GitHub bir dosyayı en çok 2 GB kabul ettiği için ISO iki parçadır. İkisini de indirip birleştirin:
+          GitHub bir dosyayı en çok 2 GB kabul ettiği için ISO $sayi parçadır. Hepsini (ve .sha256 dosyasını) aynı klasöre indirip birleştirin:
 
           **Windows** (indirdiğiniz klasörde PowerShell ya da Komut İstemi):
           \`\`\`
-          cmd /c copy /b $iso.parca0 + $iso.parca1 $iso
+          cmd /c copy /b $birlestir $iso
           certutil -hashfile $iso SHA256
           \`\`\`
           **Linux:** \`cat $iso.parca* > $iso && sha256sum -c $iso.sha256\`
