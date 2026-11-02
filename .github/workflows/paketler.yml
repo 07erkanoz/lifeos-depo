@@ -10,6 +10,7 @@
 #   sır LIFEOS_PAKET_ANAHTARI   imza anahtarının gizli kısmı (ASCII)
 #   sır LIFEOS_PAKET_PAROLASI   anahtarın parolası
 #   sır LIFEOS_KAYNAK_TOKEN     LifeOSLinux'u okuyabilen token (yalnız o depo; site sürümleri için yazma da)
+#   sır LIFEOS_TUIK_API_KEY     lifeos-hesap için doğrudan TÜİK bağlantısı
 
 name: LifeOS paketleri
 
@@ -80,14 +81,35 @@ jobs:
           python3 -c 'import sys; sys.path.insert(0, "."); from lifeos_store.depo import enable; enable()'
           pacman -Sy --noconfirm
 
+      - name: Hesap için TÜİK bağlantı kaynağı
+        if: steps.paket.outputs.paket == 'lifeos-hesap'
+        env:
+          TUIK_KEY: ${{ secrets.LIFEOS_TUIK_API_KEY }}
+        run: |
+          [[ -n $TUIK_KEY ]] || { echo "::error::LIFEOS_TUIK_API_KEY sırrı gerekli"; exit 1; }
+          pacman -S --noconfirm --needed python-cryptography
+          kaynak="$RUNNER_TEMP/hesap-credentials"
+          printf '%s' "$TUIK_KEY" | python3 tools/hesap_credentials.py "$kaynak"
+          echo "LIFEOS_HESAP_CREDENTIAL_DIR=$kaynak" >> "$GITHUB_ENV"
+
       - name: Derle
         run: |
           useradd -m derleyici
           echo 'derleyici ALL=(ALL) NOPASSWD: /usr/bin/pacman' > /etc/sudoers.d/derleyici
           chown -R derleyici "$GITHUB_WORKSPACE"
           cd "packaging/${{ steps.paket.outputs.paket }}"
-          sudo -u derleyici makepkg --syncdeps --noconfirm --cleanbuild --nocheck
+          if [[ '${{ steps.paket.outputs.paket }}' == lifeos-hesap ]]; then
+            chown -R derleyici "$LIFEOS_HESAP_CREDENTIAL_DIR"
+            sudo -u derleyici env LIFEOS_HESAP_CREDENTIAL_DIR="$LIFEOS_HESAP_CREDENTIAL_DIR" makepkg --syncdeps --noconfirm --cleanbuild --nocheck
+            python3 ../../tools/hesap_credentials.py --verify-package "$(realpath "$(find . -maxdepth 1 -name '*.pkg.tar.zst' -print -quit)")"
+          else
+            sudo -u derleyici makepkg --syncdeps --noconfirm --cleanbuild --nocheck
+          fi
           ls -l ./*.pkg.tar.zst
+
+      - name: Geçici TÜİK kaynağını temizle
+        if: always() && steps.paket.outputs.paket == 'lifeos-hesap'
+        run: rm -rf -- "$RUNNER_TEMP/hesap-credentials"
 
       - name: İmzala ve depoya koy
         env:
