@@ -92,6 +92,17 @@ jobs:
           printf '%s' "$TUIK_KEY" | python3 tools/hesap_credentials.py "$kaynak"
           echo "LIFEOS_HESAP_CREDENTIAL_DIR=$kaynak" >> "$GITHUB_ENV"
 
+      - name: Player için OpenSubtitles anahtarı
+        if: steps.paket.outputs.paket == 'lifeos-player'
+        env:
+          OS_KEY: ${{ secrets.LIFEOS_OPENSUBTITLES_KEY }}
+        run: |
+          # LifeOS'un OpenSubtitles.com uygulama anahtarı: LifeOSLinux'ta git dışında (*.key), burada sırdan (docs/player.md)
+          [[ -n $OS_KEY ]] || { echo "::error::LIFEOS_OPENSUBTITLES_KEY sırrı gerekli"; exit 1; }
+          printf '%s\n' "$OS_KEY" > "$RUNNER_TEMP/opensubtitles.key"
+          chmod 644 "$RUNNER_TEMP/opensubtitles.key"
+          echo "LIFEOS_PLAYER_KEY_FILE=$RUNNER_TEMP/opensubtitles.key" >> "$GITHUB_ENV"
+
       - name: Derle
         run: |
           useradd -m derleyici
@@ -103,9 +114,13 @@ jobs:
             sudo -u derleyici env LIFEOS_HESAP_CREDENTIAL_DIR="$LIFEOS_HESAP_CREDENTIAL_DIR" makepkg --syncdeps --noconfirm --cleanbuild --nocheck
             python3 ../../tools/hesap_credentials.py --verify-package "$(realpath "$(find . -maxdepth 1 -name '*.pkg.tar.zst' -print -quit)")"
           else
-            sudo -u derleyici makepkg --syncdeps --noconfirm --cleanbuild --nocheck
+            sudo -u derleyici env LIFEOS_PLAYER_KEY_FILE="${LIFEOS_PLAYER_KEY_FILE:-}" makepkg --syncdeps --noconfirm --cleanbuild --nocheck
           fi
           ls -l ./*.pkg.tar.zst
+
+      - name: Geçici OpenSubtitles anahtarını temizle
+        if: always() && steps.paket.outputs.paket == 'lifeos-player'
+        run: rm -f -- "$RUNNER_TEMP/opensubtitles.key"
 
       - name: Geçici TÜİK kaynağını temizle
         if: always() && steps.paket.outputs.paket == 'lifeos-hesap'
