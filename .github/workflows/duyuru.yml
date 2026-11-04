@@ -1,0 +1,71 @@
+# LifeOS duyuruları (04.11.2026): yöneticinin yazdığı duyuru dosyası doğrulanır, LifeOS paket anahtarıyla imzalanır ve
+# paketlerin yanına, bu deponun "depo" sürümüne konur. Her LifeOS bilgisayarı oradan alır, yalnız bu imzaya inanır
+# (lifeos_store/duyuru.py). Bu dosyanın kaynağı LifeOSLinux'ta depo/.github/workflows/duyuru.yml.
+# Başlatan: tools/duyuru_yonetici.py (Yayınla); dosya gzip + base64 olarak "icerik" girdisinde gelir.
+#
+# Gerekenler: sır LIFEOS_PAKET_ANAHTARI, LIFEOS_PAKET_PAROLASI (paketlerinkiyle aynı), LIFEOS_KAYNAK_TOKEN.
+
+name: Duyuru yayını
+
+on:
+  workflow_dispatch:
+    inputs:
+      icerik:
+        description: "duyurular.json, gzip + base64 (tools/duyuru_yonetici.py)"
+        required: true
+
+permissions:
+  contents: write   # bu deponun "depo" sürümüne dosya koymak için
+
+concurrency:
+  group: lifeos-duyuru
+  cancel-in-progress: false
+
+jobs:
+  duyuru:
+    runs-on: ubuntu-latest
+    env:
+      DEPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.LIFEOS_KAYNAK || '07erkanoz/LifeOSLinux' }}
+          ref: main
+          token: ${{ secrets.LIFEOS_KAYNAK_TOKEN }}
+
+      - name: Dosyayı aç ve doğrula
+        env:
+          ICERIK: ${{ inputs.icerik }}
+        run: |
+          is=$RUNNER_TEMP/duyuru; mkdir -p "$is"; echo "IS=$is" >> "$GITHUB_ENV"
+          printf '%s' "$ICERIK" | base64 -d | gunzip > "$is/duyurular.json"
+          python3 - "$is/duyurular.json" <<'PY'
+          import json, sys
+          sys.path.insert(0, ".")
+          from lifeos_store.duyuru import validate
+          data = json.load(open(sys.argv[1], encoding="utf-8"))
+          problems = validate(data)
+          for problem in problems:
+              print("::error::" + problem)
+          sys.exit(1 if problems else 0)
+          PY
+
+      - name: İmzala ve depoya koy
+        env:
+          ANAHTAR: ${{ secrets.LIFEOS_PAKET_ANAHTARI }}
+          PAROLA: ${{ secrets.LIFEOS_PAKET_PAROLASI }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ -n $ANAHTAR ]] || { echo "::error::LIFEOS_PAKET_ANAHTARI sırrı yok: tools/depo_sirlari.sh"; exit 1; }
+          export GNUPGHOME=$(mktemp -d); chmod 700 "$GNUPGHOME"
+          umask 077; printf '%s' "$PAROLA" > "$GNUPGHOME/parola"; umask 022
+          printf 'pinentry-mode loopback\npassphrase-file %s\n' "$GNUPGHOME/parola" > "$GNUPGHOME/gpg.conf"
+          echo allow-loopback-pinentry > "$GNUPGHOME/gpg-agent.conf"
+          printf '%s\n' "$ANAHTAR" | gpg --import
+          ANAHTAR_KIMLIGI=$(gpg --with-colons --list-secret-keys | awk -F: '/^fpr/ {print $10; exit}')
+          cd "$IS"
+          gpg --batch --detach-sign --no-armor -u "$ANAHTAR_KIMLIGI" duyurular.json
+          gpg --verify duyurular.json.sig duyurular.json
+          gh release upload depo --repo "$DEPO" --clobber duyurular.json duyurular.json.sig
+          rm -rf "$GNUPGHOME"
+          echo "Yayımlandı: $(python3 -c 'import json; print(len(json.load(open("duyurular.json"))["duyurular"]))') duyuru"
