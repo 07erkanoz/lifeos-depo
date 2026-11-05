@@ -1,0 +1,57 @@
+# LifeOS kanalları (LifeOS Player'ın IPTV kataloğu, docs/tv.md): her gün iptv-org'un açık veritabanından ve
+# apps/player/kanallar/kaynaklar.json'daki listelerden yeniden kurulur, bu deponun "iptv-katalog" sürümüne konur.
+# Player günde bir kez buradan indirir: https://github.com/<bu depo>/releases/download/iptv-katalog/katalog.json.gz
+# Bu dosyanın kaynağı LifeOSLinux'ta depo/.github/workflows/iptv-katalog.yml; `tools/depo_is_akisi.sh` buraya taşır.
+#
+# Gerekenler: sır LIFEOS_KAYNAK_TOKEN (LifeOSLinux'u okuyabilen token; paketler.yml ile aynı).
+
+name: LifeOS kanalları
+
+on:
+  schedule:
+    - cron: '17 3 * * *'   # her gün 06:17 (Türkiye)
+  workflow_dispatch:
+
+permissions:
+  contents: write   # bu deponun "iptv-katalog" sürümüne dosya koymak için
+
+concurrency:
+  group: iptv-katalog
+  cancel-in-progress: true
+
+jobs:
+  katalog:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DEPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.LIFEOS_KAYNAK || '07erkanoz/LifeOSLinux' }}
+          ref: main
+          token: ${{ secrets.LIFEOS_KAYNAK_TOKEN }}
+
+      - name: Kataloğu kur
+        run: python3 tools/iptv_katalog.py --cikti katalog.json.gz
+
+      - name: Denetle
+        # A broken source must not empty the Player's list: at least the Turkish channels of today's catalog.
+        run: |
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, "apps/player")
+          from lifeos_player import kanallar
+          catalog = kanallar.load("katalog.json.gz")
+          turkish = kanallar.choose(catalog, ["tur"], "TR")
+          print(len(catalog["channels"]), "kanal;", len(turkish), "Türkçe/Türkiye")
+          if len(catalog["channels"]) < 3000 or len(turkish) < 150:
+              sys.exit("Katalog beklenenden küçük; yayımlanmadı.")
+          PY
+
+      - name: Yayımla
+        run: |
+          gh release view iptv-katalog --repo "$DEPO" >/dev/null 2>&1 || \
+            gh release create iptv-katalog --repo "$DEPO" --title "LifeOS kanalları" \
+              --notes "LifeOS Player'ın IPTV kataloğu; her gün yenilenir (LifeOSLinux docs/tv.md)."
+          gh release upload iptv-katalog katalog.json.gz --repo "$DEPO" --clobber
