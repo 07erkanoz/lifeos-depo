@@ -44,7 +44,10 @@ jobs:
       DEPO: ${{ github.repository }}
     steps:
       - name: Araçlar
-        run: pacman -Syu --noconfirm --needed archiso git github-cli python sudo mtools
+        # No pacman download timeout: GitHub's release downloads sometimes wait ten seconds before the first byte.
+        run: |
+          grep -q '^DisableDownloadTimeout' /etc/pacman.conf || sed -i '/^\[options\]/a DisableDownloadTimeout' /etc/pacman.conf
+          pacman -Syu --noconfirm --needed archiso git github-cli python sudo mtools
 
       - uses: actions/checkout@v4
         with:
