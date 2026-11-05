@@ -45,7 +45,11 @@ jobs:
       DEPO: ${{ github.repository }}
     steps:
       - name: Araçlar
-        run: pacman -Syu --noconfirm --needed git github-cli python pacman-contrib
+        # GitHub's release downloads sometimes wait ten seconds before the first byte when many come at once, and pacman
+        # gives up after ten seconds without data: every build failed so (05.11.2026). No download timeout here.
+        run: |
+          grep -q '^DisableDownloadTimeout' /etc/pacman.conf || sed -i '/^\[options\]/a DisableDownloadTimeout' /etc/pacman.conf
+          pacman -Syu --noconfirm --needed git github-cli python pacman-contrib
 
       - uses: actions/checkout@v4
         with:
