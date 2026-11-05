@@ -4,7 +4,8 @@
 #
 # Ne yapar: testleri Linux'ta ve Windows'ta çalıştırır; LifeOS-USB.exe (pencere) ile lifeos-usb-cli.exe'yi (CLI)
 # PyInstaller ile derler; diskleri listeletip sistem diskinin görünmediğini denetler; sonra en güncel LifeOS'u
-# indirip bağlanmış bir VHD'ye yazar ve geri okur — UAC yardımcısı yolundan, gerçek USB bellek olmadan.
+# indirip bağlanmış bir VHD'ye yazar ve geri okur — UAC yardımcısı yolundan, gerçek USB bellek olmadan; ardından
+# aynı VHD'yi "normal hale getir" ile tek bölümlük FAT32 ve exFAT belleğe döndürüp içine dosya yazar.
 # Çıktı: iş akışı eseri (artifact). "yayinla" seçilirse ve bütün denemeler geçtiyse programlar bu deponun "usb"
 # sürümüne konur (her seferinde aynı adres; docs/usb-olusturucu.md · Dağıtım):
 #   https://github.com/07erkanoz/lifeos-depo/releases/download/usb/LifeOS-USB.exe
@@ -129,6 +130,35 @@ jobs:
           $disk | Format-List Number, PartitionStyle, Size
           Get-Partition -DiskNumber $number -ErrorAction SilentlyContinue | Format-Table
           if ($disk.PartitionStyle -eq 'RAW') { throw 'Diskte bölüm tablosu yok' }
+
+      - name: VHD'yi normal belleğe döndür (FAT32, sonra exFAT)
+        if: ${{ inputs.vhd }}
+        working-directory: apps/usb/dist
+        env:
+          LIFEOS_USB_DENEME_VHD: '1'
+          LIFEOS_USB_YARDIMCI: '1'
+        run: |
+          $number = (Get-Disk | Where-Object { [string]$_.BusType -eq 'File Backed Virtual' } | Select-Object -First 1).Number
+          if ($null -eq $number) { throw 'VHD yok' }
+          foreach ($fs in @('', 'exfat')) {
+            if ($fs) { ./lifeos-usb-cli.exe normal "$number" --evet --dosya-sistemi exfat }
+            else { ./lifeos-usb-cli.exe normal "$number" --evet }  # 6 GB: FAT32 by its size
+            if ($LASTEXITCODE) { throw "normal hale getirilemedi: $LASTEXITCODE" }
+            Update-Disk -Number $number
+            $disk = Get-Disk -Number $number
+            $parts = @(Get-Partition -DiskNumber $number | Where-Object { [string]$_.Type -ne 'Reserved' })
+            $volume = $parts[0] | Get-Volume
+            $disk | Format-List Number, PartitionStyle, Size
+            $volume | Format-List DriveLetter, FileSystem, FileSystemLabel, Size
+            $want = if ($fs) { 'exFAT' } else { 'FAT32' }
+            if ($disk.PartitionStyle -ne 'MBR') { throw "Bölüm tablosu MBR değil: $($disk.PartitionStyle)" }
+            if ($parts.Count -ne 1) { throw "Bir yerine $($parts.Count) bölüm" }
+            if ($volume.FileSystem -ne $want -or $volume.FileSystemLabel -ne 'USB') { throw "Beklenmeyen birim: $($volume.FileSystem) $($volume.FileSystemLabel)" }
+            # a normal stick takes files: one written and read back through its drive letter
+            $file = "$($volume.DriveLetter):\deneme.txt"
+            Set-Content -Path $file -Value 'LifeOS'
+            if ((Get-Content -Path $file) -ne 'LifeOS') { throw 'Dosya geri okunamadı' }
+          }
 
       - uses: actions/upload-artifact@v4
         with:
