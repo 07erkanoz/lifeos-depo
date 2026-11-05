@@ -1,0 +1,205 @@
+# LifeOS USB Oluşturucu'nun Windows programları, açık paket deposunda (lifeos-depo) derlenir: GitHub açık depolarda
+# Actions'ı ücretsiz verir, kaynak (LifeOSLinux) gizli kalır. Bu dosyanın kaynağı LifeOSLinux'ta
+# depo/.github/workflows/usb-olusturucu.yml; `tools/depo_is_akisi.sh` buraya taşır (docs/usb-olusturucu.md).
+#
+# Ne yapar: testleri Linux'ta ve Windows'ta çalıştırır; LifeOS-USB.exe (pencere) ile lifeos-usb-cli.exe'yi (CLI)
+# PyInstaller ile derler; diskleri listeletip sistem diskinin görünmediğini denetler; sonra en güncel LifeOS'u
+# indirip bağlanmış bir VHD'ye yazar ve geri okur — UAC yardımcısı yolundan, gerçek USB bellek olmadan.
+# Çıktı: iş akışı eseri (artifact). "yayinla" seçilirse ve bütün denemeler geçtiyse programlar bu deponun "usb"
+# sürümüne konur (her seferinde aynı adres; docs/usb-olusturucu.md · Dağıtım):
+#   https://github.com/07erkanoz/lifeos-depo/releases/download/usb/LifeOS-USB.exe
+# Yanlarında SHA256SUMS, LifeOS paket anahtarıyla imzası SHA256SUMS.sig ve sürüm bilgisi surum.json durur.
+#
+# Başlatan: `gh workflow run usb-olusturucu.yml --repo 07erkanoz/lifeos-depo -f ref=main [-f yayinla=true]`
+# Gerekenler: sır LIFEOS_KAYNAK_TOKEN (LifeOSLinux'u okuyabilen token; paketler.yml ile aynı).
+
+name: LifeOS USB Oluşturucu
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "LifeOSLinux'ta dal ya da etiket"
+        required: true
+        default: main
+      vhd:
+        description: "En güncel ISO'yu indirip bir VHD'ye yazarak Windows yazma yolunu dene"
+        type: boolean
+        default: true
+      yayinla:
+        description: "Denemeler geçerse programları \"usb\" sürümüne koy"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.LIFEOS_KAYNAK || '07erkanoz/LifeOSLinux' }}
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.LIFEOS_KAYNAK_TOKEN }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Testler
+        run: |
+          sudo apt-get install -y gnupg
+          pip install cryptography
+          python -m unittest tests.test_usb -v
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.LIFEOS_KAYNAK || '07erkanoz/LifeOSLinux' }}
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.LIFEOS_KAYNAK_TOKEN }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Araçlar
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r apps/usb/requirements.txt "pyinstaller>=6.10,<7"
+
+      - name: Testler (Windows'ta)
+        run: python -m unittest tests.test_usb -v
+
+      - name: Derle
+        working-directory: apps/usb
+        run: |
+          python simge.py build/lifeos-usb.ico
+          python -m PyInstaller --noconfirm lifeos-usb.spec
+          Get-ChildItem dist | Format-Table Name, Length
+
+      - name: Diskler — sistem diski görünmemeli
+        working-directory: apps/usb/dist
+        run: |
+          ./lifeos-usb-cli.exe --surum-bilgisi
+          $disks = ./lifeos-usb-cli.exe diskler --json | Out-String | ConvertFrom-Json
+          $disks | Format-Table id, title, bus, usable
+          $system = (Get-Disk | Where-Object { $_.IsBoot -or $_.IsSystem }).Number | ForEach-Object { [string]$_ }
+          foreach ($d in @($disks)) { if ($d -and $system -contains $d.id) { throw "Sistem diski listelendi: $($d.id)" } }
+          ./lifeos-usb-cli.exe surum
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Pencere açılıyor mu
+        working-directory: apps/usb/dist
+        run: |
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $p = Start-Process -FilePath ./LifeOS-USB.exe -PassThru
+          Start-Sleep -Seconds 20
+          if ($p.HasExited) { throw "LifeOS-USB.exe kapandı (çıkış $($p.ExitCode)): QML yüklenemedi" }
+          Stop-Process -Id $p.Id
+
+      - name: VHD'ye yaz ve geri oku (UAC yardımcısı yolundan)
+        if: ${{ inputs.vhd }}
+        working-directory: apps/usb/dist
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          LIFEOS_USB_DENEME_VHD: '1'
+          LIFEOS_USB_YARDIMCI: '1'
+        run: |
+          $vhd = Join-Path $env:RUNNER_TEMP 'deneme.vhdx'
+          "create vdisk file=`"$vhd`" maximum=6144 type=expandable`nattach vdisk`nexit" | Set-Content (Join-Path $env:RUNNER_TEMP 'vhd.txt')
+          diskpart /s (Join-Path $env:RUNNER_TEMP 'vhd.txt')
+          Start-Sleep -Seconds 5
+          $number = (Get-Disk | Where-Object { [string]$_.BusType -eq 'File Backed Virtual' } | Select-Object -First 1).Number
+          if ($null -eq $number) { throw 'VHD bağlanmadı' }
+          ./lifeos-usb-cli.exe diskler
+          ./lifeos-usb-cli.exe yaz "$number" --evet --klasor (Join-Path $env:RUNNER_TEMP 'imaj')
+          if ($LASTEXITCODE) { throw "yazılamadı: $LASTEXITCODE" }
+          # lifeos-usb has read the disk back already; Windows must now also see the image's partition table
+          Update-Disk -Number $number
+          $disk = Get-Disk -Number $number
+          $disk | Format-List Number, PartitionStyle, Size
+          Get-Partition -DiskNumber $number -ErrorAction SilentlyContinue | Format-Table
+          if ($disk.PartitionStyle -eq 'RAW') { throw 'Diskte bölüm tablosu yok' }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lifeos-usb-windows
+          path: |
+            apps/usb/dist/LifeOS-USB.exe
+            apps/usb/dist/lifeos-usb-cli.exe
+          if-no-files-found: error
+
+  yayin:
+    needs: [linux, windows]
+    if: ${{ inputs.yayinla }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # bu deponun "usb" sürümüne koymak için
+    env:
+      DEPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.LIFEOS_KAYNAK || '07erkanoz/LifeOSLinux' }}
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.LIFEOS_KAYNAK_TOKEN }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: lifeos-usb-windows
+          path: yayin
+      - name: Özet, imza ve sürüm bilgisi
+        env:
+          ANAHTAR: ${{ secrets.LIFEOS_PAKET_ANAHTARI }}
+          PAROLA: ${{ secrets.LIFEOS_PAKET_PAROLASI }}
+        run: |
+          [[ -n $ANAHTAR ]] || { echo "::error::LIFEOS_PAKET_ANAHTARI sırrı yok: tools/depo_sirlari.sh"; exit 1; }
+          surum=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' apps/usb/lifeos_usb/__init__.py)
+          kaynak=$(git rev-parse --short HEAD)
+          echo "SURUM=$surum" >> "$GITHUB_ENV"; echo "KAYNAK=$kaynak" >> "$GITHUB_ENV"
+          cd yayin
+          sha256sum LifeOS-USB.exe lifeos-usb-cli.exe > SHA256SUMS
+          python3 - "$surum" "$kaynak" "$DEPO" <<'PY'
+          import hashlib, json, sys, datetime
+          version, source, repo = sys.argv[1:]
+          base = f"https://github.com/{repo}/releases/download/usb/"
+          files = {name: {"url": base + name, "sha256": hashlib.sha256(open(name, "rb").read()).hexdigest()}
+                   for name in ("LifeOS-USB.exe", "lifeos-usb-cli.exe")}
+          json.dump({"version": version, "source": source, "date": datetime.date.today().isoformat(), "windows": files},
+                    open("surum.json", "w"), indent=1)
+          PY
+          export GNUPGHOME=$(mktemp -d); chmod 700 "$GNUPGHOME"
+          umask 077; printf '%s' "$PAROLA" > "$GNUPGHOME/parola"; umask 022
+          printf 'pinentry-mode loopback\npassphrase-file %s\n' "$GNUPGHOME/parola" > "$GNUPGHOME/gpg.conf"
+          echo allow-loopback-pinentry > "$GNUPGHOME/gpg-agent.conf"
+          printf '%s\n' "$ANAHTAR" | gpg --import
+          anahtar=$(gpg --with-colons --list-secret-keys | awk -F: '/^fpr/ {print $10; exit}')
+          gpg --batch --detach-sign --no-armor -u "$anahtar" SHA256SUMS
+          gpg --batch --detach-sign --no-armor -u "$anahtar" surum.json
+          rm -rf "$GNUPGHOME"
+          ls -l
+      - name: "\"usb\" sürümüne koy"
+        run: |
+          notlar="LifeOS USB Oluşturucu $SURUM (kaynak $KAYNAK, $(date -u '+%d.%m.%Y')): en güncel LifeOS'u LifeOS'un kendi sürümlerinden indirir, denetler ve USB belleğe yazar.
+
+          **Windows 10/11:** [LifeOS-USB.exe](https://github.com/$DEPO/releases/download/usb/LifeOS-USB.exe) dosyasını indirip açın; kurulum gerekmez. Yönetici izni (UAC) yalnız yazarken sorulur.
+          Program henüz kod imzalı değil: Windows \"Bilgisayarınız korundu\" derse **Ek bilgi → Yine de çalıştır**.
+
+          \`lifeos-usb-cli.exe\` aynı işi komut satırından yapar. Dosyaların SHA-256 özetleri SHA256SUMS içindedir; SHA256SUMS.sig LifeOS paket anahtarının (C5E4 16AD 7FD7 F2F9 EF31 4945 0BF1 C17C 936F FAB6) imzasıdır.
+
+          LifeOS'ta: Mağaza'dan \"LifeOS USB Oluşturucu\" (\`lifeos-usb\` paketi)."
+          gh release view usb --repo "$DEPO" >/dev/null 2>&1 || \
+            gh release create usb --repo "$DEPO" --title "LifeOS USB Oluşturucu" --latest=false --notes "$notlar"
+          gh release edit usb --repo "$DEPO" --title "LifeOS USB Oluşturucu $SURUM" --latest=false --notes "$notlar"
+          gh release upload usb --repo "$DEPO" --clobber yayin/LifeOS-USB.exe yayin/lifeos-usb-cli.exe \
+            yayin/SHA256SUMS yayin/SHA256SUMS.sig yayin/surum.json yayin/surum.json.sig
+          echo "https://github.com/$DEPO/releases/tag/usb"

@@ -71,10 +71,26 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REF: ${{ inputs.ref }}
+          ANAHTAR: ${{ secrets.LIFEOS_PAKET_ANAHTARI }}
+          PAROLA: ${{ secrets.LIFEOS_PAKET_PAROLASI }}
         run: |
           cd /mnt/cikti
           iso=$(ls ./*.iso | head -1); iso=${iso#./}
           sha256sum "$iso" > "$iso.sha256"
+          # The SHA-256 file is signed with the LifeOS package key; LifeOS USB Oluşturucu checks it against the key
+          # it carries (apps/usb/lifeos_usb/imza.py). Without the secret the release goes out unsigned, as before.
+          imza=
+          if [[ -n $ANAHTAR ]]; then
+            export GNUPGHOME=$(mktemp -d); chmod 700 "$GNUPGHOME"
+            umask 077; printf '%s' "$PAROLA" > "$GNUPGHOME/parola"; umask 022
+            printf 'pinentry-mode loopback\npassphrase-file %s\n' "$GNUPGHOME/parola" > "$GNUPGHOME/gpg.conf"
+            echo allow-loopback-pinentry > "$GNUPGHOME/gpg-agent.conf"
+            printf '%s\n' "$ANAHTAR" | gpg --import
+            gpg --batch --detach-sign --no-armor -u "$(gpg --with-colons --list-secret-keys | awk -F: '/^fpr/ {print $10; exit}')" "$iso.sha256"
+            gpg --batch --verify "$iso.sha256.sig" "$iso.sha256"
+            rm -rf "$GNUPGHOME"; unset GNUPGHOME
+            imza="$iso.sha256.sig"
+          fi
           split -b 1900M -d -a 1 "$iso" "$iso.parca"
           rm -f "$iso"
           kaynak=$(git -C "$GITHUB_WORKSPACE" rev-parse --short HEAD)
@@ -84,6 +100,8 @@ jobs:
           sayi=$(ls "$iso".parca* | wc -l)
           birlestir=$(ls "$iso".parca* | sed 's/$/ +/' | tr '\n' ' ' | sed 's/ + $//')
           notlar="LifeOS geliştirme ISO'su: kaynak $REF ($kaynak), $(date -u '+%d.%m.%Y %H:%M') UTC.
+
+          **En kolayı:** Windows'ta [LifeOS USB Oluşturucu](https://github.com/$DEPO/releases/download/usb/LifeOS-USB.exe) en güncel ISO'yu kendisi indirir, birleştirir, denetler ve USB belleğe yazar; aşağıdaki adımlara gerek kalmaz.
 
           GitHub bir dosyayı en çok 2 GB kabul ettiği için ISO $sayi parçadır. Hepsini (ve .sha256 dosyasını) aynı klasöre indirip birleştirin:
 
@@ -97,7 +115,7 @@ jobs:
           Çıkan özet \`$iso.sha256\` dosyasındakiyle aynı olmalı. Sonra Rufus ile USB'ye yazın (sorarsa \"DD kipi\").
           Secure Boot kapalı olmalı."
           gh release create "$etiket" --repo "$DEPO" --title "LifeOS ISO $(date -u +%d.%m.%Y)" --prerelease \
-            --notes "$notlar" $parcalar "$iso.sha256"
+            --notes "$notlar" $parcalar "$iso.sha256" $imza
           # Eskiler yer kaplamasın: son üç ISO sürümü kalır.
           gh release list --repo "$DEPO" --limit 100 --json tagName -q '.[].tagName' | grep '^iso-' | sort -r | tail -n +4 |
             while read -r eski; do gh release delete "$eski" --repo "$DEPO" --yes --cleanup-tag; done
