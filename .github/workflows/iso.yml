@@ -118,7 +118,11 @@ jobs:
           sayi=$(ls "$iso".parca* | wc -l)
           birlestir=$(ls "$iso".parca* | sed 's/$/ +/' | tr '\n' ' ' | sed 's/ + $//')
           if [[ -f .guvenli-acilis ]]; then
-            secure="**Secure Boot açık bilgisayarda** (BIOS'a girmek gerekmez): ilk açılışta mavi bir İngilizce ekran gelir. OK → bir tuşa basın → Enroll key from disk → LIFEOS_USB → LifeOS.cer → Continue → Yes → Reboot. Bu bir kez olur."
+            # The same steps as LifeOS USB Oluşturucu's guide and docs/guvenli-acilis.md (Mavi ekran rehberi).
+            secure="**Secure Boot açık bilgisayarda** BIOS'a girmek gerekmez; mavi, İngilizce bir ekran bir kez LifeOS anahtarını eklemek ister. Kurulumdan sonra bir daha sormaz. Fareyle değil, ok tuşları ve Enter ile seçilir.
+
+          - **LifeOS USB Oluşturucu ile (Windows):** yazma bitince **LifeOS'u bu bilgisayarda başlat**'a basın; program bir kod gösterir ve bilgisayarı USB'den açar. Mavi ekranda: 10 saniye içinde bir tuş → **Enroll MOK** → **Continue** → **Yes** → kodu yazın → **Reboot**.
+          - **Açılış menüsünden açtıysanız:** **OK** → bir tuş → **Enroll key from disk** → **LIFEOS_USB** → **LifeOS.cer** → **Continue** → **Yes** → **Reboot**."
           else
             secure="Secure Boot kapalı olmalı."
           fi

@@ -79,6 +79,13 @@ jobs:
       - name: Testler (Windows'ta)
         run: python -m unittest tests.test_usb -v
 
+      - name: Firmware değişkenleri (Başlat düğmesinin Windows çağrıları)
+        # "LifeOS'u bu bilgisayarda başlat" (apps/usb/lifeos_usb/acilis.py): the privilege, reading BootOrder and a
+        # write–read–delete of a throw-away variable under a GUID of LifeOS's own. The runner's MokNew and boot order
+        # are never touched; what MokManager does with the bytes is tested in the Secure Boot VM (docs/guvenli-acilis.md).
+        working-directory: apps/usb
+        run: python -c "from lifeos_usb import acilis; import sys; sys.exit(0 if acilis.self_test() else 1)"
+
       - name: Derle
         working-directory: apps/usb
         run: |

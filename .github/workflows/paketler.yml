@@ -11,6 +11,8 @@
 #   sır LIFEOS_PAKET_PAROLASI   anahtarın parolası
 #   sır LIFEOS_KAYNAK_TOKEN     LifeOSLinux'u okuyabilen token (yalnız o depo; site sürümleri için yazma da)
 #   sır LIFEOS_TUIK_API_KEY     lifeos-hesap için doğrudan TÜİK bağlantısı
+#   sır LIFEOS_SB_ANAHTARI      Secure Boot anahtarı: linux-lifeos ve refind-lifeos onunla imzalanır
+#   sır LIFEOS_SB_SERTIFIKASI   (tools/guvenli_acilis_anahtari.sh; docs/guvenli-acilis.md)
 
 name: LifeOS paketleri
 
@@ -18,7 +20,7 @@ on:
   workflow_dispatch:
     inputs:
       paket:
-        description: 'Paket (lifeos, lifeos-yonetim, lifeos-sistem, lifeos-magaza, lifeos-karsilama, lifeos-paneller, lifeos-masaustu, lifeos-konsol, lifeos-izin, lifeos-temalar, lifeos-acilis, lifeos-destek-ekibi, lifeos-keyring, lifeos-folio, lifeos-ofis, lifeos-muzik, lifeos-zsh, calamares, orchis-kde-theme, win11-icon-theme, pardus-idevice-mounter)'
+        description: 'Paket (lifeos, lifeos-yonetim, lifeos-sistem, lifeos-magaza, lifeos-karsilama, lifeos-paneller, lifeos-masaustu, lifeos-konsol, lifeos-izin, lifeos-temalar, lifeos-acilis, lifeos-destek-ekibi, lifeos-keyring, lifeos-folio, linux-lifeos, refind-lifeos, lifeos-ofis, lifeos-muzik, lifeos-zsh, calamares, orchis-kde-theme, win11-icon-theme, pardus-idevice-mounter)'
         required: true
       ref:
         description: "LifeOSLinux'ta etiket ya da dal (ör. lifeos-v0.1.0-7)"
@@ -85,6 +87,24 @@ jobs:
           python3 -c 'import sys; sys.path.insert(0, "."); from lifeos_store.depo import enable; enable()'
           pacman -Sy --noconfirm
 
+      - name: Arch paketi ve Secure Boot anahtarı
+        # linux-lifeos and refind-lifeos are Arch's packages signed with the LifeOS Secure Boot key
+        # (tools/arch_imzali.py): pacman fetches Arch's newest one and checks its signature, the PKGBUILD gets its
+        # version and metadata. The key is readable only by the build user, and only for this build.
+        if: steps.paket.outputs.paket == 'linux-lifeos' || steps.paket.outputs.paket == 'refind-lifeos'
+        env:
+          SB_ANAHTAR: ${{ secrets.LIFEOS_SB_ANAHTARI }}
+          SB_SERTIFIKA: ${{ secrets.LIFEOS_SB_SERTIFIKASI }}
+          PAKET: ${{ steps.paket.outputs.paket }}
+        run: |
+          [[ -n $SB_ANAHTAR && -n $SB_SERTIFIKA ]] || { echo "::error::LIFEOS_SB_ANAHTARI ve LIFEOS_SB_SERTIFIKASI sırları gerekli"; exit 1; }
+          python3 tools/arch_imzali.py hazirla "$PAKET" "$RUNNER_TEMP/arch"
+          sb="$RUNNER_TEMP/sb"; mkdir -p "$sb"
+          ( umask 077; printf '%s\n' "$SB_ANAHTAR" > "$sb/db.key"; printf '%s\n' "$SB_SERTIFIKA" > "$sb/db.crt" )
+          echo "LIFEOS_SB_KEY=$sb/db.key" >> "$GITHUB_ENV"
+          echo "LIFEOS_SB_CERT=$sb/db.crt" >> "$GITHUB_ENV"
+          echo "SRCDEST=$RUNNER_TEMP/arch" >> "$GITHUB_ENV"
+
       - name: Hesap için TÜİK bağlantı kaynağı
         if: steps.paket.outputs.paket == 'lifeos-hesap'
         env:
@@ -112,19 +132,25 @@ jobs:
           useradd -m derleyici
           echo 'derleyici ALL=(ALL) NOPASSWD: /usr/bin/pacman' > /etc/sudoers.d/derleyici
           chown -R derleyici "$GITHUB_WORKSPACE"
+          [[ -z ${LIFEOS_SB_KEY:-} ]] || chown -R derleyici "$RUNNER_TEMP/sb" "$SRCDEST"
           cd "packaging/${{ steps.paket.outputs.paket }}"
           if [[ '${{ steps.paket.outputs.paket }}' == lifeos-hesap ]]; then
             chown -R derleyici "$LIFEOS_HESAP_CREDENTIAL_DIR"
             sudo -u derleyici env LIFEOS_HESAP_CREDENTIAL_DIR="$LIFEOS_HESAP_CREDENTIAL_DIR" makepkg --syncdeps --noconfirm --cleanbuild --nocheck
             python3 ../../tools/hesap_credentials.py --verify-package "$(realpath "$(find . -maxdepth 1 -name '*.pkg.tar.zst' -print -quit)")"
           else
-            sudo -u derleyici env LIFEOS_PLAYER_KEY_FILE="${LIFEOS_PLAYER_KEY_FILE:-}" makepkg --syncdeps --noconfirm --cleanbuild --nocheck
+            sudo -u derleyici env LIFEOS_PLAYER_KEY_FILE="${LIFEOS_PLAYER_KEY_FILE:-}" LIFEOS_SB_KEY="${LIFEOS_SB_KEY:-}" \
+              LIFEOS_SB_CERT="${LIFEOS_SB_CERT:-}" SRCDEST="${SRCDEST:-}" makepkg --syncdeps --noconfirm --cleanbuild --nocheck
           fi
           ls -l ./*.pkg.tar.zst
 
       - name: Geçici OpenSubtitles anahtarını temizle
         if: always() && steps.paket.outputs.paket == 'lifeos-player'
         run: rm -f -- "$RUNNER_TEMP/opensubtitles.key"
+
+      - name: Geçici Secure Boot anahtarını temizle
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/sb"
 
       - name: Geçici TÜİK kaynağını temizle
         if: always() && steps.paket.outputs.paket == 'lifeos-hesap'
