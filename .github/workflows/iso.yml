@@ -47,7 +47,7 @@ jobs:
         # No pacman download timeout: GitHub's release downloads sometimes wait ten seconds before the first byte.
         run: |
           grep -q '^DisableDownloadTimeout' /etc/pacman.conf || sed -i '/^\[options\]/a DisableDownloadTimeout' /etc/pacman.conf
-          pacman -Syu --noconfirm --needed archiso git github-cli python sudo mtools
+          pacman -Syu --noconfirm --needed archiso git github-cli python sudo mtools sbsigntools openssl
 
       - uses: actions/checkout@v4
         with:
@@ -68,7 +68,22 @@ jobs:
         run: python3 tools/prepare_profile.py --output /mnt/profil --lifeos-deposu
 
       - name: ISO
-        run: python3 tools/build_iso.py --profile /mnt/profil --work /mnt/is --output /mnt/cikti
+        # Secure Boot (docs/guvenli-acilis.md): the LifeOS Secure Boot key signs rEFInd and the kernel behind
+        # Microsoft-signed shim; tools/guvenli_acilis_anahtari.sh put it here. Without the secret the USB starts with
+        # Secure Boot off only, as before.
+        env:
+          SB_ANAHTAR: ${{ secrets.LIFEOS_SB_ANAHTARI }}
+          SB_SERTIFIKA: ${{ secrets.LIFEOS_SB_SERTIFIKASI }}
+        run: |
+          imza=()
+          if [[ -n $SB_ANAHTAR && -n $SB_SERTIFIKA ]]; then
+            mkdir -p -m 700 /mnt/sb
+            ( umask 077; printf '%s\n' "$SB_ANAHTAR" > /mnt/sb/db.key; printf '%s\n' "$SB_SERTIFIKA" > /mnt/sb/db.crt )
+            imza=(--sb-key /mnt/sb/db.key --sb-cert /mnt/sb/db.crt)
+          fi
+          python3 tools/build_iso.py --profile /mnt/profil --work /mnt/is --output /mnt/cikti "${imza[@]}"
+          rm -rf /mnt/sb
+          [[ ${#imza[@]} -eq 0 ]] || touch /mnt/cikti/.guvenli-acilis
 
       - name: Sürüme koy
         env:
@@ -102,6 +117,11 @@ jobs:
           # 30.10.2026: the ISO grew past 3.8 GB and became three parts; the note said two and joined only parca0+parca1.
           sayi=$(ls "$iso".parca* | wc -l)
           birlestir=$(ls "$iso".parca* | sed 's/$/ +/' | tr '\n' ' ' | sed 's/ + $//')
+          if [[ -f .guvenli-acilis ]]; then
+            secure="**Secure Boot açık bilgisayarda** (BIOS'a girmek gerekmez): ilk açılışta mavi bir İngilizce ekran gelir. OK → bir tuşa basın → Enroll key from disk → LIFEOS_USB → LifeOS.cer → Continue → Yes → Reboot. Bu bir kez olur."
+          else
+            secure="Secure Boot kapalı olmalı."
+          fi
           notlar="LifeOS geliştirme ISO'su: kaynak $REF ($kaynak), $(date -u '+%d.%m.%Y %H:%M') UTC.
 
           **En kolayı:** Windows'ta [LifeOS USB Oluşturucu](https://github.com/$DEPO/releases/download/usb/LifeOS-USB.exe) en güncel ISO'yu kendisi indirir, birleştirir, denetler ve USB belleğe yazar; aşağıdaki adımlara gerek kalmaz.
@@ -116,7 +136,7 @@ jobs:
           **Linux:** \`cat $iso.parca* > $iso && sha256sum -c $iso.sha256\`
 
           Çıkan özet \`$iso.sha256\` dosyasındakiyle aynı olmalı. Sonra Rufus ile USB'ye yazın (sorarsa \"DD kipi\").
-          Secure Boot kapalı olmalı."
+          $secure"
           gh release create "$etiket" --repo "$DEPO" --title "LifeOS ISO $(date -u +%d.%m.%Y)" --prerelease \
             --notes "$notlar" $parcalar "$iso.sha256" $imza
           # Eskiler yer kaplamasın: son üç ISO sürümü kalır.
