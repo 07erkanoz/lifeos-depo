@@ -11,6 +11,11 @@ name: LifeOS deposu → R2
 
 on:
   workflow_dispatch:
+    inputs:
+      hepsi:
+        description: "Değişmemiş paketleri de yeniden yükle (üstbilgileri yenilensin)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -51,4 +56,5 @@ jobs:
           R2_HESAP: ${{ vars.R2_HESAP }}
           R2_ERISIM_KIMLIGI: ${{ secrets.R2_ERISIM_KIMLIGI }}
           R2_GIZLI_ANAHTAR: ${{ secrets.R2_GIZLI_ANAHTAR }}
+          R2_HEPSI: ${{ inputs.hepsi && '1' || '' }}
         run: bash tools/depo_r2.sh /mnt/depo
