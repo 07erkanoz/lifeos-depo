@@ -1,0 +1,70 @@
+# GitHub'daki bir ISO sürümünü Cloudflare R2'ye tek dosya olarak koyar (tools/iso_r2.sh). iso.yml her yeni ISO'yu
+# zaten R2'ye de koyar; bu iş akışı R2'den önce çıkmış bir ISO'yu taşımak ya da yarıda kalmış bir yüklemeyi
+# yinelemek için. Parçaları indirir, birleştirir, .sha256 dosyasıyla denetler, sonra yükler.
+# Bu dosyanın kaynağı LifeOSLinux'ta depo/.github/workflows/iso-r2.yml; `tools/depo_is_akisi.sh` buraya taşır.
+#
+# Başlatan: `gh workflow run iso-r2.yml --repo 07erkanoz/lifeos-depo [-f etiket=iso-YYYYMMDD-HHMM]` (boşsa en yenisi)
+# Gerekenler: sırlar LIFEOS_KAYNAK_TOKEN, R2_ERISIM_KIMLIGI, R2_GIZLI_ANAHTAR; değişken R2_HESAP.
+
+name: LifeOS ISO → R2
+
+on:
+  workflow_dispatch:
+    inputs:
+      etiket:
+        description: "ISO sürümünün etiketi (iso-YYYYMMDD-HHMM); boşsa en yenisi"
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lifeos-iso
+  cancel-in-progress: false
+
+jobs:
+  r2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      DEPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.LIFEOS_KAYNAK || '07erkanoz/LifeOSLinux' }}
+          ref: main
+          token: ${{ secrets.LIFEOS_KAYNAK_TOKEN }}
+          sparse-checkout: tools
+
+      - name: Araçlar
+        run: sudo apt-get update -q && sudo apt-get install -y -q rclone
+
+      - name: İndir, birleştir, denetle
+        env:
+          ETIKET: ${{ inputs.etiket }}
+        run: |
+          etiket=${ETIKET:-$(gh api "repos/$DEPO/git/matching-refs/tags/iso-" --jq '.[].ref' | sed 's|^refs/tags/||' | sort | tail -1)}
+          [[ $etiket =~ ^iso-[0-9]{8}-[0-9]{4}$ ]] || { echo "::error::Etiket iso-… değil: $etiket"; exit 1; }
+          echo "ETIKET=$etiket" >> "$GITHUB_ENV"
+          # The runner's second disk has room for the parts and the whole image (~9 GB together).
+          sudo mkdir -p /mnt/r2 && sudo chown "$USER" /mnt/r2 && cd /mnt/r2
+          gh release download "$etiket" --repo "$DEPO" --dir parca
+          ilk=$(ls parca/*.iso.parca0); iso=$(basename "${ilk%.parca0}")
+          # split -d -a 1 numbers parca0…parca9: the shell sorts them in order.
+          cat parca/"$iso".parca* > "$iso"
+          mv parca/"$iso".sha256* . && rm -rf parca
+          sha256sum -c "$iso.sha256"
+          ls -l
+
+      - name: R2'ye koy
+        env:
+          R2_HESAP: ${{ vars.R2_HESAP }}
+          R2_ERISIM_KIMLIGI: ${{ secrets.R2_ERISIM_KIMLIGI }}
+          R2_GIZLI_ANAHTAR: ${{ secrets.R2_GIZLI_ANAHTAR }}
+        run: |
+          bash tools/iso_r2.sh /mnt/r2 "$ETIKET"
+          # Only the newest ISO stays in R2 (as on GitHub): older ones go once the newest is in.
+          son=$(gh api "repos/$DEPO/git/matching-refs/tags/iso-" --jq '.[].ref' | sed 's|^refs/tags/||' | sort | tail -1)
+          [[ $ETIKET != "$son" ]] || bash tools/iso_r2.sh --yalniz "$ETIKET"

@@ -4,10 +4,14 @@
 #
 # ISO, ev bağlantısına hiç uğramadan GitHub'ın makinesinde derlenir ve bu deponun "iso-…" sürümüne konur. GitHub bir
 # sürüm dosyasını en çok 2 GB kabul eder: ISO parçalara bölünür, sürüm notu Windows'ta ve Linux'ta birleştirmeyi anlatır.
+# Bütün ISO ayrıca Cloudflare R2'ye konur (tools/iso_r2.sh): lifeos.com.tr onu https://iso.lifeos.com.tr/<etiket>/
+# altından tek dosya olarak verir, indirme trafiği ne GitHub parçalarına ne lifeos.com.tr sunucusuna kalır.
 # LifeOS'un kendi paketleri (Calamares, Konsol, anahtar, temalar) imzalı [lifeos] deposundan gelir.
 #
 # Başlatan: `gh workflow run iso.yml --repo 07erkanoz/lifeos-depo -f ref=main` ya da Actions sekmesindeki düğme.
-# Gerekenler: sır LIFEOS_KAYNAK_TOKEN (LifeOSLinux'u okuyabilen token; paketler.yml ile aynı).
+# Gerekenler: sır LIFEOS_KAYNAK_TOKEN (LifeOSLinux'u okuyabilen token; paketler.yml ile aynı); R2 için sırlar
+# R2_ERISIM_KIMLIGI ve R2_GIZLI_ANAHTAR, değişken R2_HESAP (Cloudflare hesap kimliği). R2 sırları yoksa ISO yalnız
+# GitHub'a konur, eskisi gibi.
 
 name: LifeOS ISO
 
@@ -47,7 +51,7 @@ jobs:
         # No pacman download timeout: GitHub's release downloads sometimes wait ten seconds before the first byte.
         run: |
           grep -q '^DisableDownloadTimeout' /etc/pacman.conf || sed -i '/^\[options\]/a DisableDownloadTimeout' /etc/pacman.conf
-          pacman -Syu --noconfirm --needed archiso git github-cli python sudo mtools sbsigntools openssl
+          pacman -Syu --noconfirm --needed archiso git github-cli python sudo mtools sbsigntools openssl rclone
 
       - uses: actions/checkout@v4
         with:
@@ -91,8 +95,12 @@ jobs:
           REF: ${{ inputs.ref }}
           ANAHTAR: ${{ secrets.LIFEOS_PAKET_ANAHTARI }}
           PAROLA: ${{ secrets.LIFEOS_PAKET_PAROLASI }}
+          R2_HESAP: ${{ vars.R2_HESAP }}
+          R2_ERISIM_KIMLIGI: ${{ secrets.R2_ERISIM_KIMLIGI }}
+          R2_GIZLI_ANAHTAR: ${{ secrets.R2_GIZLI_ANAHTAR }}
         run: |
           cd /mnt/cikti
+          etiket="iso-$(date -u +%Y%m%d-%H%M)"
           iso=$(ls ./*.iso | head -1); iso=${iso#./}
           sha256sum "$iso" > "$iso.sha256"
           # The SHA-256 file is signed with the LifeOS package key; LifeOS USB Oluşturucu checks it against the key
@@ -109,10 +117,15 @@ jobs:
             rm -rf "$GNUPGHOME"; unset GNUPGHOME
             imza="$iso.sha256.sig"
           fi
+          # The whole image goes to R2 before GitHub: once the release is out, lifeos.com.tr links its R2 copy.
+          tek=
+          if [[ -n $R2_ERISIM_KIMLIGI && -n $R2_GIZLI_ANAHTAR && -n $R2_HESAP ]]; then
+            bash "$GITHUB_WORKSPACE/tools/iso_r2.sh" /mnt/cikti "$etiket"
+            tek="https://iso.lifeos.com.tr/$etiket/$iso"
+          fi
           split -b 1900M -d -a 1 "$iso" "$iso.parca"
           rm -f "$iso"
           kaynak=$(git -C "$GITHUB_WORKSPACE" rev-parse --short HEAD)
-          etiket="iso-$(date -u +%Y%m%d-%H%M)"
           parcalar=$(ls "$iso".parca* | tr '\n' ' ')
           # 30.10.2026: the ISO grew past 3.8 GB and became three parts; the note said two and joined only parca0+parca1.
           sayi=$(ls "$iso".parca* | wc -l)
@@ -130,7 +143,9 @@ jobs:
 
           **En kolayı:** Windows'ta [LifeOS USB Oluşturucu](https://github.com/$DEPO/releases/download/usb/LifeOS-USB.exe) en güncel ISO'yu kendisi indirir, birleştirir, denetler ve USB belleğe yazar; aşağıdaki adımlara gerek kalmaz.
 
-          GitHub bir dosyayı en çok 2 GB kabul ettiği için ISO $sayi parçadır. Hepsini (ve .sha256 dosyasını) aynı klasöre indirip birleştirin:
+          ${tek:+**Tek dosya:** [$iso]($tek) — aşağıdaki parçaların birleşmiş hâli; özeti \`$iso.sha256\` ile denetleyin.
+
+          }GitHub bir dosyayı en çok 2 GB kabul ettiği için ISO $sayi parçadır. Hepsini (ve .sha256 dosyasını) aynı klasöre indirip birleştirin:
 
           **Windows** (indirdiğiniz klasörde PowerShell ya da Komut İstemi):
           \`\`\`
@@ -143,7 +158,8 @@ jobs:
           $secure"
           gh release create "$etiket" --repo "$DEPO" --title "LifeOS ISO $(date -u +%d.%m.%Y)" --prerelease \
             --notes "$notlar" $parcalar "$iso.sha256" $imza
-          # Eskiler yer kaplamasın: son üç ISO sürümü kalır.
-          gh release list --repo "$DEPO" --limit 100 --json tagName -q '.[].tagName' | grep '^iso-' | sort -r | tail -n +4 |
+          # Yalnız en yeni ISO kalır, GitHub'da da R2'de de. Eskiler ancak yenisi yayımlandıktan sonra silinir.
+          gh release list --repo "$DEPO" --limit 100 --json tagName -q '.[].tagName' | grep '^iso-' | grep -vxF "$etiket" |
             while read -r eski; do gh release delete "$eski" --repo "$DEPO" --yes --cleanup-tag; done
+          [[ -z $tek ]] || bash "$GITHUB_WORKSPACE/tools/iso_r2.sh" --yalniz "$etiket"
           echo "ISO: https://github.com/$DEPO/releases/tag/$etiket"
