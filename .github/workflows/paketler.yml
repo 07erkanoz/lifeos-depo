@@ -208,7 +208,7 @@ jobs:
           # Her paketin en yeni üç sürümü kalır (tools/depo_eski.py): biri kullanılan, ikisi geri dönmek için.
           gh release view depo --repo "$DEPO" --json assets --jq '.assets[].name' |
             python3 "$GITHUB_WORKSPACE/.depo-araclari/tools/depo_eski.py" --tut 3 |
-            while read -r eski; do gh release delete-asset depo "$eski" --repo "$DEPO" --yes; done
+            while read -r eski; do [[ -n $eski ]] && gh release delete-asset depo "$eski" --repo "$DEPO" --yes; done || true
 
       - name: R2'ye de koy
         # The same signed files in Cloudflare R2: pacman's first address (lifeos_store/depo.py). GitHub keeps its copy.
