@@ -3,7 +3,8 @@
 # depo/.github/workflows/paketler.yml; `tools/depo_is_akisi.sh` buraya taşır (docs/paketler.md).
 #
 # Paketi LifeOSLinux'tan, verilen etikette (ör. lifeos-v0.1.0-7) ya da dalda derler, LifeOS anahtarıyla imzalar ve bu
-# deponun "depo" sürümüne koyar; pacman şuradan indirir: https://github.com/<bu depo>/releases/download/depo
+# deponun "depo" sürümüne koyar, aynılarını Cloudflare R2'ye de (tools/depo_r2.sh). pacman önce
+# https://paket.lifeos.com.tr/paket adresine, olmazsa https://github.com/<bu depo>/releases/download/depo adresine bakar.
 # Başlatan: `python3 tools/yayinla.py <paket>` (etiketi gönderir, bu işi çalıştırır, bitmesini bekler).
 #
 # Gerekenler (tools/depo_sirlari.sh hazırlar):
@@ -13,6 +14,7 @@
 #   sır LIFEOS_TUIK_API_KEY     lifeos-hesap için doğrudan TÜİK bağlantısı
 #   sır LIFEOS_SB_ANAHTARI      Secure Boot anahtarı: linux-lifeos ve refind-lifeos onunla imzalanır
 #   sır LIFEOS_SB_SERTIFIKASI   (tools/guvenli_acilis_anahtari.sh; docs/guvenli-acilis.md)
+#   sır R2_ERISIM_KIMLIGI, R2_GIZLI_ANAHTAR ve değişken R2_HESAP: paketlerin R2 kopyası (ISO ile aynı anahtar)
 
 name: LifeOS paketleri
 
@@ -51,7 +53,7 @@ jobs:
         # gives up after ten seconds without data: every build failed so (05.11.2026). No download timeout here.
         run: |
           grep -q '^DisableDownloadTimeout' /etc/pacman.conf || sed -i '/^\[options\]/a DisableDownloadTimeout' /etc/pacman.conf
-          pacman -Syu --noconfirm --needed git github-cli python pacman-contrib
+          pacman -Syu --noconfirm --needed git github-cli python pacman-contrib rclone
 
       - uses: actions/checkout@v4
         with:
@@ -193,6 +195,22 @@ jobs:
             lifeos.db lifeos.db.sig lifeos.db.tar.gz lifeos.db.tar.gz.sig \
             lifeos.files lifeos.files.sig lifeos.files.tar.gz lifeos.files.tar.gz.sig
           rm -rf "$GNUPGHOME"
+          # Her paketin en yeni üç sürümü kalır (tools/depo_eski.py): biri kullanılan, ikisi geri dönmek için.
+          gh release view depo --repo "$DEPO" --json assets --jq '.assets[].name' |
+            python3 "$GITHUB_WORKSPACE/tools/depo_eski.py" --tut 3 |
+            while read -r eski; do gh release delete-asset depo "$eski" --repo "$DEPO" --yes; done
+
+      - name: R2'ye de koy
+        # The same signed files in Cloudflare R2: pacman's first address (lifeos_store/depo.py). GitHub keeps its copy.
+        env:
+          R2_HESAP: ${{ vars.R2_HESAP }}
+          R2_ERISIM_KIMLIGI: ${{ secrets.R2_ERISIM_KIMLIGI }}
+          R2_GIZLI_ANAHTAR: ${{ secrets.R2_GIZLI_ANAHTAR }}
+        run: |
+          if [[ -z $R2_ERISIM_KIMLIGI || -z $R2_GIZLI_ANAHTAR || -z $R2_HESAP ]]; then
+            echo "::warning::R2 sırları yok: paket yalnız GitHub'da"; exit 0
+          fi
+          bash "$GITHUB_WORKSPACE/tools/depo_r2.sh" "$IS"
 
       - name: Sürüm notu
         if: steps.paket.outputs.etiket != ''
