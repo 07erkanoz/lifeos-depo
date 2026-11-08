@@ -6,9 +6,12 @@
 # PyInstaller ile derler; diskleri listeletip sistem diskinin görünmediğini denetler; sonra en güncel LifeOS'u
 # indirip bağlanmış bir VHD'ye yazar ve geri okur — UAC yardımcısı yolundan, gerçek USB bellek olmadan; ardından
 # aynı VHD'yi "normal hale getir" ile tek bölümlük FAT32 ve exFAT belleğe döndürüp içine dosya yazar.
+# Linux'ta aynısını AppImage ile yapar (LifeOS-USB-x86_64.AppImage, apps/usb/appimage.sh): pencere ekran dışı açılır,
+# ISO bir döngü aygıtına root olmadan — udisks ve polkit yolundan — yazılıp geri okunur, sonra normal hale getirilir.
 # Çıktı: iş akışı eseri (artifact). "yayinla" seçilirse ve bütün denemeler geçtiyse programlar bu deponun "usb"
 # sürümüne konur (her seferinde aynı adres; docs/usb-olusturucu.md · Dağıtım):
 #   https://github.com/07erkanoz/lifeos-depo/releases/download/usb/LifeOS-USB.exe
+#   https://github.com/07erkanoz/lifeos-depo/releases/download/usb/LifeOS-USB-x86_64.AppImage
 # Yanlarında SHA256SUMS, LifeOS paket anahtarıyla imzası SHA256SUMS.sig ve sürüm bilgisi surum.json durur.
 #
 # Başlatan: `gh workflow run usb-olusturucu.yml --repo 07erkanoz/lifeos-depo -f ref=main [-f yayinla=true]`
@@ -24,7 +27,7 @@ on:
         required: true
         default: main
       vhd:
-        description: "En güncel ISO'yu indirip bir VHD'ye yazarak Windows yazma yolunu dene"
+        description: "En güncel ISO'yu indirip Windows'ta bir VHD'ye, Linux'ta bir döngü aygıtına yazarak dene"
         type: boolean
         default: true
       yayinla:
@@ -37,7 +40,11 @@ permissions:
 
 jobs:
   linux:
-    runs-on: ubuntu-latest
+    # Ubuntu 22.04: the AppImage needs a glibc at least as new as its build machine's (2.35), so the older the better
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    env:
+      APPIMAGE_EXTRACT_AND_RUN: '1'   # the runner has no FUSE; this PC runs the AppImage mounted (docs/usb-olusturucu.md)
     steps:
       - uses: actions/checkout@v4
         with:
@@ -47,11 +54,102 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Testler
+
+      - name: Araçlar
         run: |
-          sudo apt-get install -y gnupg
-          pip install cryptography
-          python -m unittest tests.test_usb -v
+          sudo apt-get update -qq
+          # dbus-python is built here; udisks2 and polkit write without root, as on a desktop; mkfs for "normal"
+          sudo apt-get install -y -qq gnupg pkg-config libdbus-1-dev libglib2.0-dev udisks2 dosfstools exfatprogs \
+            libegl1 libgl1 libfontconfig1 libxkbcommon0 libgssapi-krb5-2
+          python -m pip install --upgrade pip
+          python -m pip install -r apps/usb/requirements.txt dbus-python "pyinstaller>=6.10,<7"
+
+      - name: Testler
+        run: python -m unittest tests.test_usb -v
+
+      - name: Derle (AppImage)
+        working-directory: apps/usb
+        run: |
+          python -m PyInstaller --noconfirm lifeos-usb-linux.spec
+          ./appimage.sh
+          du -sh dist/lifeos-usb
+
+      - name: Diskler — sistem diski görünmemeli
+        working-directory: apps/usb/dist
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          ./LifeOS-USB-x86_64.AppImage --surum-bilgisi
+          ./LifeOS-USB-x86_64.AppImage diskler --json | tee "$RUNNER_TEMP/diskler.json"
+          lsblk -o NAME,SIZE,TRAN,RM,TYPE,MOUNTPOINTS
+          # the disk under / : its partition's parent in sysfs
+          system=$(basename "$(dirname "$(readlink -f "/sys/dev/block/$(mountpoint -d /)")")")
+          echo "Sistem diski: $system"
+          python3 -c "import json,sys; ids=[d['id'] for d in json.load(open(sys.argv[1]))]; sys.exit(f'Sistem diski listelendi: {sys.argv[2]}' if sys.argv[2] in ids else 0)" \
+            "$RUNNER_TEMP/diskler.json" "$system"
+          ./LifeOS-USB-x86_64.AppImage surum
+
+      - name: Pencere açılıyor mu
+        working-directory: apps/usb/dist
+        run: |
+          QT_QPA_PLATFORM=offscreen ./LifeOS-USB-x86_64.AppImage > "$RUNNER_TEMP/pencere.log" 2>&1 &
+          sleep 20
+          cat "$RUNNER_TEMP/pencere.log"
+          pid=$(pgrep -f 'usr/lib/lifeos-usb/lifeos-usb' | head -1)
+          [ -n "$pid" ] || { echo "::error::Pencere kapandı: QML yüklenemedi"; exit 1; }
+          if grep -qi 'qml' "$RUNNER_TEMP/pencere.log"; then echo "::error::QML uyarısı"; exit 1; fi
+          kill "$pid"
+
+      - name: Döngü aygıtına yaz ve geri oku (root olmadan, udisks + polkit)
+        if: ${{ inputs.vhd }}
+        working-directory: apps/usb/dist
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          # polkit says yes to this user as a desktop's password question would; the program itself stays the user
+          # (Ubuntu 22.04's polkit 0.105 reads .pkla files, not JavaScript rules)
+          sudo tee /etc/polkit-1/localauthority/50-local.d/lifeos-usb-ci.pkla > /dev/null <<EOF
+          [LifeOS USB CI]
+          Identity=unix-user:$USER
+          Action=org.freedesktop.udisks2.*
+          ResultAny=yes
+          ResultInactive=yes
+          ResultActive=yes
+          EOF
+          sudo systemctl restart polkit
+          sudo mkdir -p /mnt/deneme && sudo chown "$USER" /mnt/deneme
+          truncate -s 6G /mnt/deneme/bellek.img
+          loop=$(sudo losetup -P -f --show /mnt/deneme/bellek.img)
+          echo "LOOP=$loop" >> "$GITHUB_ENV"
+          ./LifeOS-USB-x86_64.AppImage yaz --deneme-aygiti "$loop" --evet --klasor /mnt/deneme/imaj
+          # an independent look: the stick's first bytes are the image, and it shows LifeOS's ISO 9660 and GPT
+          iso=$(ls /mnt/deneme/imaj/*.iso)
+          size=$(stat -c %s "$iso")
+          [ "$(sudo head -c "$size" "$loop" | sha256sum | cut -d' ' -f1)" = "$(sha256sum < "$iso" | cut -d' ' -f1)" ] \
+            || { echo "::error::Bellekteki imaj ISO ile aynı değil"; exit 1; }
+          sudo blkid -p "$loop"
+          sudo blkid -p "$loop" | grep -q iso9660
+
+      - name: Döngü aygıtını normal belleğe döndür (FAT32, sonra exFAT)
+        if: ${{ inputs.vhd }}
+        working-directory: apps/usb/dist
+        run: |
+          for fs in fat32 exfat; do
+            ./LifeOS-USB-x86_64.AppImage normal --deneme-aygiti "$LOOP" --evet --dosya-sistemi "$fs"
+            sudo udevadm settle
+            lsblk -f "$LOOP"
+            want=$([ "$fs" = fat32 ] && echo vfat || echo exfat)
+            [ "$(lsblk -no PTTYPE "$LOOP" | head -1)" = dos ] || { echo "::error::Bölüm tablosu MBR değil"; exit 1; }
+            [ "$(sudo blkid -p -s TYPE -o value "${LOOP}p1")" = "$want" ] || { echo "::error::$fs olmadı"; exit 1; }
+            [ "$(sudo blkid -p -s LABEL -o value "${LOOP}p1")" = USB ] || { echo "::error::Adı USB değil"; exit 1; }
+          done
+          sudo losetup -d "$LOOP"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lifeos-usb-linux
+          path: apps/usb/dist/LifeOS-USB-x86_64.AppImage
+          if-no-files-found: error
 
   windows:
     runs-on: windows-latest
@@ -194,6 +292,10 @@ jobs:
         with:
           name: lifeos-usb-windows
           path: yayin
+      - uses: actions/download-artifact@v4
+        with:
+          name: lifeos-usb-linux
+          path: yayin
       - name: Özet, imza ve sürüm bilgisi
         env:
           ANAHTAR: ${{ secrets.LIFEOS_PAKET_ANAHTARI }}
@@ -204,14 +306,18 @@ jobs:
           kaynak=$(git rev-parse --short HEAD)
           echo "SURUM=$surum" >> "$GITHUB_ENV"; echo "KAYNAK=$kaynak" >> "$GITHUB_ENV"
           cd yayin
-          sha256sum LifeOS-USB.exe lifeos-usb-cli.exe > SHA256SUMS
+          chmod +x LifeOS-USB-x86_64.AppImage
+          sha256sum LifeOS-USB.exe lifeos-usb-cli.exe LifeOS-USB-x86_64.AppImage > SHA256SUMS
           python3 - "$surum" "$kaynak" "$DEPO" <<'PY'
           import hashlib, json, sys, datetime
           version, source, repo = sys.argv[1:]
           base = f"https://github.com/{repo}/releases/download/usb/"
-          files = {name: {"url": base + name, "sha256": hashlib.sha256(open(name, "rb").read()).hexdigest()}
-                   for name in ("LifeOS-USB.exe", "lifeos-usb-cli.exe")}
-          json.dump({"version": version, "source": source, "date": datetime.date.today().isoformat(), "windows": files},
+          def files(*names):
+              return {name: {"url": base + name, "sha256": hashlib.sha256(open(name, "rb").read()).hexdigest()}
+                      for name in names}
+          json.dump({"version": version, "source": source, "date": datetime.date.today().isoformat(),
+                     "windows": files("LifeOS-USB.exe", "lifeos-usb-cli.exe"),
+                     "linux": files("LifeOS-USB-x86_64.AppImage")},
                     open("surum.json", "w"), indent=1)
           PY
           export GNUPGHOME=$(mktemp -d); chmod 700 "$GNUPGHOME"
@@ -231,12 +337,15 @@ jobs:
           **Windows 10/11:** [LifeOS-USB.exe](https://github.com/$DEPO/releases/download/usb/LifeOS-USB.exe) dosyasını indirip açın; kurulum gerekmez. Yönetici izni (UAC) yalnız yazarken sorulur.
           Program henüz kod imzalı değil: Windows \"Bilgisayarınız korundu\" derse **Ek bilgi → Yine de çalıştır**.
 
-          \`lifeos-usb-cli.exe\` aynı işi komut satırından yapar. Dosyaların SHA-256 özetleri SHA256SUMS içindedir; SHA256SUMS.sig LifeOS paket anahtarının (C5E4 16AD 7FD7 F2F9 EF31 4945 0BF1 C17C 936F FAB6) imzasıdır.
+          **Linux (LifeOS dışı dağıtımlar, x86_64):** [LifeOS-USB-x86_64.AppImage](https://github.com/$DEPO/releases/download/usb/LifeOS-USB-x86_64.AppImage) dosyasını indirin, çalıştırılabilir yapın (\`chmod +x\` ya da dosya yöneticisinde Özellikler → İzinler) ve açın. Root gerekmez: yazarken parolayı sistemin kendi izin penceresi (polkit) sorar. udisks2 gerekir; GNOME, KDE ve çoğu masaüstünde zaten kuruludur.
+
+          \`lifeos-usb-cli.exe\` aynı işi komut satırından yapar; AppImage da komut alır (\`./LifeOS-USB-x86_64.AppImage diskler\`). Dosyaların SHA-256 özetleri SHA256SUMS içindedir; SHA256SUMS.sig LifeOS paket anahtarının (C5E4 16AD 7FD7 F2F9 EF31 4945 0BF1 C17C 936F FAB6) imzasıdır.
 
           LifeOS'ta: Mağaza'dan \"LifeOS USB Oluşturucu\" (\`lifeos-usb\` paketi)."
           gh release view usb --repo "$DEPO" >/dev/null 2>&1 || \
             gh release create usb --repo "$DEPO" --title "LifeOS USB Oluşturucu" --latest=false --notes "$notlar"
           gh release edit usb --repo "$DEPO" --title "LifeOS USB Oluşturucu $SURUM" --latest=false --notes "$notlar"
           gh release upload usb --repo "$DEPO" --clobber yayin/LifeOS-USB.exe yayin/lifeos-usb-cli.exe \
+            yayin/LifeOS-USB-x86_64.AppImage \
             yayin/SHA256SUMS yayin/SHA256SUMS.sig yayin/surum.json yayin/surum.json.sig
           echo "https://github.com/$DEPO/releases/tag/usb"
