@@ -91,7 +91,7 @@ jobs:
           # Arch, Fedora, openSUSE have no /usr/lib/ssl, where the bundled (Ubuntu) OpenSSL looks for certificates:
           # with it hidden the program must still reach GitHub, through the system's own certificate file
           sudo mv /usr/lib/ssl /usr/lib/ssl.gizli
-          ./LifeOS-USB-x86_64.AppImage surum > "$RUNNER_TEMP/surum.txt" 2>&1 || true
+          LIFEOS_USB_DIL=tr ./LifeOS-USB-x86_64.AppImage surum > "$RUNNER_TEMP/surum.txt" 2>&1 || true
           sudo mv /usr/lib/ssl.gizli /usr/lib/ssl
           cat "$RUNNER_TEMP/surum.txt"
           grep -q '^En güncel LifeOS' "$RUNNER_TEMP/surum.txt" && ! grep -q 'Bağlantı yok' "$RUNNER_TEMP/surum.txt" \
