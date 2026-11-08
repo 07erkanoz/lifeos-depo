@@ -61,6 +61,16 @@ jobs:
           ref: ${{ inputs.ref }}
           token: ${{ secrets.LIFEOS_KAYNAK_TOKEN }}
 
+      # The repository's own tools (depo_eski.py, depo_r2.sh) from main, whatever tag the package is built from: an
+      # older tag has none of them, and its build stopped after the GitHub upload, before R2 (08.11.2026, refind-lifeos).
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.LIFEOS_KAYNAK || '07erkanoz/LifeOSLinux' }}
+          ref: main
+          token: ${{ secrets.LIFEOS_KAYNAK_TOKEN }}
+          path: .depo-araclari
+          sparse-checkout: tools
+
       - name: Hangi paket, hangi sürüm
         id: paket
         env:
@@ -197,7 +207,7 @@ jobs:
           rm -rf "$GNUPGHOME"
           # Her paketin en yeni üç sürümü kalır (tools/depo_eski.py): biri kullanılan, ikisi geri dönmek için.
           gh release view depo --repo "$DEPO" --json assets --jq '.assets[].name' |
-            python3 "$GITHUB_WORKSPACE/tools/depo_eski.py" --tut 3 |
+            python3 "$GITHUB_WORKSPACE/.depo-araclari/tools/depo_eski.py" --tut 3 |
             while read -r eski; do gh release delete-asset depo "$eski" --repo "$DEPO" --yes; done
 
       - name: R2'ye de koy
@@ -210,7 +220,7 @@ jobs:
           if [[ -z $R2_ERISIM_KIMLIGI || -z $R2_GIZLI_ANAHTAR || -z $R2_HESAP ]]; then
             echo "::warning::R2 sırları yok: paket yalnız GitHub'da"; exit 0
           fi
-          bash "$GITHUB_WORKSPACE/tools/depo_r2.sh" "$IS"
+          bash "$GITHUB_WORKSPACE/.depo-araclari/tools/depo_r2.sh" "$IS"
 
       - name: Sürüm notu
         if: steps.paket.outputs.etiket != ''
