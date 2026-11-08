@@ -55,6 +55,9 @@ jobs:
           ANAHTAR: ${{ secrets.LIFEOS_PAKET_ANAHTARI }}
           PAROLA: ${{ secrets.LIFEOS_PAKET_PAROLASI }}
           GH_TOKEN: ${{ github.token }}
+          R2_HESAP: ${{ vars.R2_HESAP }}
+          R2_ERISIM_KIMLIGI: ${{ secrets.R2_ERISIM_KIMLIGI }}
+          R2_GIZLI_ANAHTAR: ${{ secrets.R2_GIZLI_ANAHTAR }}
         run: |
           [[ -n $ANAHTAR ]] || { echo "::error::LIFEOS_PAKET_ANAHTARI sırrı yok: tools/depo_sirlari.sh"; exit 1; }
           export GNUPGHOME=$(mktemp -d); chmod 700 "$GNUPGHOME"
@@ -68,4 +71,7 @@ jobs:
           gpg --verify duyurular.json.sig duyurular.json
           gh release upload depo --repo "$DEPO" --clobber duyurular.json duyurular.json.sig
           rm -rf "$GNUPGHOME"
+          # The same signed file in Cloudflare R2: computers try it first (lifeos_store/duyuru.py)
+          command -v rclone >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q rclone; }
+          sh "$GITHUB_WORKSPACE/tools/r2_koy.sh" paket duyurular.json duyurular.json.sig
           echo "Yayımlandı: $(python3 -c 'import json; print(len(json.load(open("duyurular.json"))["duyurular"]))') duyuru"

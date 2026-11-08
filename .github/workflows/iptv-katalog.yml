@@ -1,6 +1,7 @@
 # LifeOS kanalları (LifeOS Player'ın IPTV kataloğu, docs/tv.md): her gün iptv-org'un açık veritabanından ve
 # apps/player/kanallar/kaynaklar.json'daki listelerden yeniden kurulur, bu deponun "iptv-katalog" sürümüne konur.
-# Player günde bir kez buradan indirir: https://github.com/<bu depo>/releases/download/iptv-katalog/katalog.json.gz
+# Player günde bir kez önce https://paket.lifeos.com.tr/iptv/katalog.json.gz (R2), olmazsa
+# https://github.com/<bu depo>/releases/download/iptv-katalog/katalog.json.gz adresinden indirir.
 # Bu dosyanın kaynağı LifeOSLinux'ta depo/.github/workflows/iptv-katalog.yml; `tools/depo_is_akisi.sh` buraya taşır.
 #
 # Gerekenler: sır LIFEOS_KAYNAK_TOKEN (LifeOSLinux'u okuyabilen token; paketler.yml ile aynı).
@@ -55,3 +56,13 @@ jobs:
             gh release create iptv-katalog --repo "$DEPO" --title "LifeOS kanalları" \
               --notes "LifeOS Player'ın IPTV kataloğu; her gün yenilenir (LifeOSLinux docs/tv.md)."
           gh release upload iptv-katalog katalog.json.gz --repo "$DEPO" --clobber
+
+      - name: R2'ye de koy
+        # Player tries https://paket.lifeos.com.tr/iptv/katalog.json.gz first (apps/player/lifeos_player/backend.py)
+        env:
+          R2_HESAP: ${{ vars.R2_HESAP }}
+          R2_ERISIM_KIMLIGI: ${{ secrets.R2_ERISIM_KIMLIGI }}
+          R2_GIZLI_ANAHTAR: ${{ secrets.R2_GIZLI_ANAHTAR }}
+        run: |
+          command -v rclone >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q rclone; }
+          sh tools/r2_koy.sh iptv katalog.json.gz
