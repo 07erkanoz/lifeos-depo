@@ -28,11 +28,16 @@ concurrency:
 jobs:
   r2:
     runs-on: ubuntu-latest
+    # Arch's rclone: Ubuntu's older one got "NotImplemented" from R2 on many first tries (08.11.2026)
+    container: archlinux:base
     timeout-minutes: 60
     env:
       DEPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
     steps:
+      - name: Araçlar
+        run: pacman -Syu --noconfirm --needed rclone github-cli python git
+
       - uses: actions/checkout@v4
         with:
           repository: ${{ vars.LIFEOS_KAYNAK || '07erkanoz/LifeOSLinux' }}
@@ -40,12 +45,9 @@ jobs:
           token: ${{ secrets.LIFEOS_KAYNAK_TOKEN }}
           sparse-checkout: tools
 
-      - name: Araçlar
-        run: sudo apt-get update -q && sudo apt-get install -y -q rclone
-
       - name: Depoyu indir
         run: |
-          sudo mkdir -p /mnt/depo && sudo chown "$USER" /mnt/depo
+          mkdir -p /mnt/depo
           gh release download depo --repo "$DEPO" --dir /mnt/depo
           # Her paketin yalnız en yeni üç sürümü taşınır (tools/depo_eski.py)
           ls /mnt/depo | python3 tools/depo_eski.py --tut 3 | (cd /mnt/depo && xargs -r rm -f --)
