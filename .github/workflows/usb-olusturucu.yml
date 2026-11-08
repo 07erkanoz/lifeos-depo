@@ -88,6 +88,14 @@ jobs:
           python3 -c "import json,sys; ids=[d['id'] for d in json.load(open(sys.argv[1]))]; sys.exit(f'Sistem diski listelendi: {sys.argv[2]}' if sys.argv[2] in ids else 0)" \
             "$RUNNER_TEMP/diskler.json" "$system"
           ./LifeOS-USB-x86_64.AppImage surum
+          # Arch, Fedora, openSUSE have no /usr/lib/ssl, where the bundled (Ubuntu) OpenSSL looks for certificates:
+          # with it hidden the program must still reach GitHub, through the system's own certificate file
+          sudo mv /usr/lib/ssl /usr/lib/ssl.gizli
+          ./LifeOS-USB-x86_64.AppImage surum > "$RUNNER_TEMP/surum.txt" 2>&1 || true
+          sudo mv /usr/lib/ssl.gizli /usr/lib/ssl
+          cat "$RUNNER_TEMP/surum.txt"
+          grep -q '^En güncel LifeOS' "$RUNNER_TEMP/surum.txt" && ! grep -q 'Bağlantı yok' "$RUNNER_TEMP/surum.txt" \
+            || { echo "::error::Sertifikalar başka yerdeyken GitHub'a bağlanamadı"; exit 1; }
 
       - name: Pencere açılıyor mu
         working-directory: apps/usb/dist
