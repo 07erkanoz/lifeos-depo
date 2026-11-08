@@ -141,7 +141,7 @@ jobs:
           fi
           notlar="LifeOS geliştirme ISO'su: kaynak $REF ($kaynak), $(date -u '+%d.%m.%Y %H:%M') UTC.
 
-          **En kolayı:** Windows'ta [LifeOS USB Oluşturucu](https://github.com/$DEPO/releases/download/usb/LifeOS-USB.exe) en güncel ISO'yu kendisi indirir, birleştirir, denetler ve USB belleğe yazar; aşağıdaki adımlara gerek kalmaz.
+          **En kolayı:** Windows'ta [LifeOS USB Oluşturucu](https://paket.lifeos.com.tr/usb/LifeOS-USB.exe) en güncel ISO'yu kendisi indirir, birleştirir, denetler ve USB belleğe yazar; aşağıdaki adımlara gerek kalmaz.
 
           ${tek:+**Tek dosya:** [$iso]($tek) — aşağıdaki parçaların birleşmiş hâli; özeti \`$iso.sha256\` ile denetleyin.
 

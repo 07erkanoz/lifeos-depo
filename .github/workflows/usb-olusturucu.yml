@@ -12,6 +12,10 @@
 # sürümüne konur (her seferinde aynı adres; docs/usb-olusturucu.md · Dağıtım):
 #   https://github.com/07erkanoz/lifeos-depo/releases/download/usb/LifeOS-USB.exe
 #   https://github.com/07erkanoz/lifeos-depo/releases/download/usb/LifeOS-USB-x86_64.AppImage
+# ve önce Cloudflare R2'ye, web sitesinin verdiği adrese (tools/usb_r2.sh; sırlar R2_ERISIM_KIMLIGI,
+# R2_GIZLI_ANAHTAR, değişken R2_HESAP):
+#   https://paket.lifeos.com.tr/usb/LifeOS-USB.exe
+#   https://paket.lifeos.com.tr/usb/LifeOS-USB-x86_64.AppImage
 # Yanlarında SHA256SUMS, LifeOS paket anahtarıyla imzası SHA256SUMS.sig ve sürüm bilgisi surum.json durur.
 #
 # Başlatan: `gh workflow run usb-olusturucu.yml --repo 07erkanoz/lifeos-depo -f ref=main [-f yayinla=true]`
@@ -320,9 +324,9 @@ jobs:
           import hashlib, json, sys, datetime
           version, source, repo = sys.argv[1:]
           base = f"https://github.com/{repo}/releases/download/usb/"
-          def files(*names):
-              return {name: {"url": base + name, "sha256": hashlib.sha256(open(name, "rb").read()).hexdigest()}
-                      for name in names}
+          def files(*names):  # R2 first (the website's address), GitHub's release as the fallback
+              return {name: {"url": "https://paket.lifeos.com.tr/usb/" + name, "github": base + name,
+                             "sha256": hashlib.sha256(open(name, "rb").read()).hexdigest()} for name in names}
           json.dump({"version": version, "source": source, "date": datetime.date.today().isoformat(),
                      "windows": files("LifeOS-USB.exe", "lifeos-usb-cli.exe"),
                      "linux": files("LifeOS-USB-x86_64.AppImage")},
@@ -338,16 +342,35 @@ jobs:
           gpg --batch --detach-sign --no-armor -u "$anahtar" surum.json
           rm -rf "$GNUPGHOME"
           ls -l
+      - name: R2'ye koy (paket.lifeos.com.tr/usb)
+        # The website's links: the same names every time, Cloudflare told not to keep an old copy (tools/usb_r2.sh).
+        # Before GitHub: GitHub's downloads were down for hours on 08.11.2026; R2 does not wait for them.
+        env:
+          R2_HESAP: ${{ vars.R2_HESAP }}
+          R2_ERISIM_KIMLIGI: ${{ secrets.R2_ERISIM_KIMLIGI }}
+          R2_GIZLI_ANAHTAR: ${{ secrets.R2_GIZLI_ANAHTAR }}
+        run: |
+          [[ -n $R2_ERISIM_KIMLIGI && -n $R2_GIZLI_ANAHTAR && -n $R2_HESAP ]] || { echo "::error::R2 sırları yok"; exit 1; }
+          sudo apt-get update -q && sudo apt-get install -y -q rclone
+          bash tools/usb_r2.sh yayin
+          # what the website hands out is what was built and signed here
+          for dosya in LifeOS-USB.exe LifeOS-USB-x86_64.AppImage lifeos-usb-cli.exe; do
+            uzak=$(curl -fsSL --retry 3 "https://paket.lifeos.com.tr/usb/$dosya" | sha256sum | cut -d' ' -f1)
+            grep -q "^$uzak  $dosya\$" yayin/SHA256SUMS || { echo "::error::R2'deki $dosya özetle tutmuyor"; exit 1; }
+          done
+
       - name: "\"usb\" sürümüne koy"
         run: |
           notlar="LifeOS USB Oluşturucu $SURUM (kaynak $KAYNAK, $(date -u '+%d.%m.%Y')): en güncel LifeOS'u LifeOS'un kendi sürümlerinden indirir, denetler ve USB belleğe yazar.
 
-          **Windows 10/11:** [LifeOS-USB.exe](https://github.com/$DEPO/releases/download/usb/LifeOS-USB.exe) dosyasını indirip açın; kurulum gerekmez. Yönetici izni (UAC) yalnız yazarken sorulur.
+          **Windows 10/11:** [LifeOS-USB.exe](https://paket.lifeos.com.tr/usb/LifeOS-USB.exe) dosyasını indirip açın; kurulum gerekmez. Yönetici izni (UAC) yalnız yazarken sorulur.
           Program henüz kod imzalı değil: Windows \"Bilgisayarınız korundu\" derse **Ek bilgi → Yine de çalıştır**.
 
-          **Linux (LifeOS dışı dağıtımlar, x86_64):** [LifeOS-USB-x86_64.AppImage](https://github.com/$DEPO/releases/download/usb/LifeOS-USB-x86_64.AppImage) dosyasını indirin, çalıştırılabilir yapın (\`chmod +x\` ya da dosya yöneticisinde Özellikler → İzinler) ve açın. Root gerekmez: yazarken parolayı sistemin kendi izin penceresi (polkit) sorar. udisks2 gerekir; GNOME, KDE ve çoğu masaüstünde zaten kuruludur.
+          **Linux (LifeOS dışı dağıtımlar, x86_64):** [LifeOS-USB-x86_64.AppImage](https://paket.lifeos.com.tr/usb/LifeOS-USB-x86_64.AppImage) dosyasını indirin, çalıştırılabilir yapın (\`chmod +x\` ya da dosya yöneticisinde Özellikler → İzinler) ve açın. Root gerekmez: yazarken parolayı sistemin kendi izin penceresi (polkit) sorar. udisks2 gerekir; GNOME, KDE ve çoğu masaüstünde zaten kuruludur.
 
           \`lifeos-usb-cli.exe\` aynı işi komut satırından yapar; AppImage da komut alır (\`./LifeOS-USB-x86_64.AppImage diskler\`). Dosyaların SHA-256 özetleri SHA256SUMS içindedir; SHA256SUMS.sig LifeOS paket anahtarının (C5E4 16AD 7FD7 F2F9 EF31 4945 0BF1 C17C 936F FAB6) imzasıdır.
+
+          Aynı dosyalar https://paket.lifeos.com.tr/usb/ adresinde de durur (Cloudflare R2; web sitesi oradan verir).
 
           LifeOS'ta: Mağaza'dan \"LifeOS USB Oluşturucu\" (\`lifeos-usb\` paketi)."
           gh release view usb --repo "$DEPO" >/dev/null 2>&1 || \
