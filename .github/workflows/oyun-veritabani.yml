@@ -1,0 +1,60 @@
+# The game list LifeOS searches (tools/oyun_veritabani.py, lifeos_store/oyunlar.py): umu-database (GPL-3.0),
+# ProtonDB's data exports (ODbL 1.0) and Are We Anti-Cheat Yet (MIT) in one file, signed with the LifeOS key and
+# put beside the packages (R2 first, the "depo" release second). Computers fetch it once a week.
+name: LifeOS oyun listesi
+
+on:
+  schedule:
+    - cron: '41 2 * * 1'   # her pazartesi 05:41 (Türkiye)
+  workflow_dispatch:
+
+permissions:
+  contents: write   # bu deponun "depo" sürümüne dosya koymak için
+
+concurrency:
+  group: lifeos-oyunlar
+  cancel-in-progress: true
+
+jobs:
+  oyunlar:
+    runs-on: ubuntu-latest
+    env:
+      DEPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.LIFEOS_KAYNAK || '07erkanoz/LifeOSLinux' }}
+          ref: main
+          token: ${{ secrets.LIFEOS_KAYNAK_TOKEN }}
+
+      - name: Listeyi kaynaklardan kur
+        run: |
+          is=$RUNNER_TEMP/oyunlar; mkdir -p "$is"; echo "IS=$is" >> "$GITHUB_ENV"
+          python3 tools/oyun_veritabani.py "$is/oyunlar.json"
+          python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert len(d["oyunlar"]) > 5000, "liste çok kısa"' "$is/oyunlar.json"
+          gzip -9 -n "$is/oyunlar.json"
+
+      - name: İmzala ve depoya koy
+        env:
+          ANAHTAR: ${{ secrets.LIFEOS_PAKET_ANAHTARI }}
+          PAROLA: ${{ secrets.LIFEOS_PAKET_PAROLASI }}
+          GH_TOKEN: ${{ github.token }}
+          R2_HESAP: ${{ vars.R2_HESAP }}
+          R2_ERISIM_KIMLIGI: ${{ secrets.R2_ERISIM_KIMLIGI }}
+          R2_GIZLI_ANAHTAR: ${{ secrets.R2_GIZLI_ANAHTAR }}
+        run: |
+          [[ -n $ANAHTAR ]] || { echo "::error::LIFEOS_PAKET_ANAHTARI sırrı yok: tools/depo_sirlari.sh"; exit 1; }
+          export GNUPGHOME=$(mktemp -d); chmod 700 "$GNUPGHOME"
+          umask 077; printf '%s' "$PAROLA" > "$GNUPGHOME/parola"; umask 022
+          printf 'pinentry-mode loopback\npassphrase-file %s\n' "$GNUPGHOME/parola" > "$GNUPGHOME/gpg.conf"
+          echo allow-loopback-pinentry > "$GNUPGHOME/gpg-agent.conf"
+          printf '%s\n' "$ANAHTAR" | gpg --import
+          ANAHTAR_KIMLIGI=$(gpg --with-colons --list-secret-keys | awk -F: '/^fpr/ {print $10; exit}')
+          cd "$IS"
+          gpg --batch --detach-sign --no-armor -u "$ANAHTAR_KIMLIGI" oyunlar.json.gz
+          gpg --verify oyunlar.json.gz.sig oyunlar.json.gz
+          gh release upload depo --repo "$DEPO" --clobber oyunlar.json.gz oyunlar.json.gz.sig
+          rm -rf "$GNUPGHOME"
+          command -v rclone >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q rclone; }
+          sh "$GITHUB_WORKSPACE/tools/r2_koy.sh" paket oyunlar.json.gz oyunlar.json.gz.sig
+          echo "Yayımlandı: $(ls -la oyunlar.json.gz | awk '{print $5}') bayt"
