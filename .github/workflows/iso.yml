@@ -71,6 +71,12 @@ jobs:
       - name: Profil
         run: python3 tools/prepare_profile.py --output /mnt/profil --lifeos-deposu
 
+      - name: Sunucu deposu
+        # LifeOS Server (docs/sunucu.md): the packages a Sunucu installation may need and the image does not hold
+        # (lifeos-sunucu, MariaDB, Docker, Caddy…), signed, in the image's /opt/lifeos/sunucu-depo; the installer
+        # takes them from there without a network and deletes the folder afterwards.
+        run: python3 tools/sunucu_depo.py --profile /mnt/profil
+
       - name: ISO
         # Secure Boot (docs/guvenli-acilis.md): the LifeOS Secure Boot key signs rEFInd and the kernel behind
         # Microsoft-signed shim; tools/guvenli_acilis_anahtari.sh put it here. Without the secret the USB starts with
