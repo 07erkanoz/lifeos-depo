@@ -22,7 +22,7 @@ on:
   workflow_dispatch:
     inputs:
       paket:
-        description: 'Paket (lifeos, lifeos-yonetim, lifeos-sistem, lifeos-magaza, lifeos-karsilama, lifeos-paneller, lifeos-masaustu, lifeos-konsol, lifeos-izin, lifeos-temalar, lifeos-acilis, lifeos-destek-ekibi, lifeos-ekip, lifeos-ileti, lifeos-keyring, lifeos-folio, linux-lifeos, refind-lifeos, lifeos-ofis, lifeos-muzik, lifeos-zsh, calamares, orchis-kde-theme, win11-icon-theme, pardus-idevice-mounter)'
+        description: 'Paket (lifeos, lifeos-yonetim, lifeos-sistem, lifeos-magaza, lifeos-karsilama, lifeos-paneller, lifeos-masaustu, lifeos-konsol, lifeos-izin, lifeos-temalar, lifeos-acilis, lifeos-destek-ekibi, lifeos-ekip, lifeos-ileti, lifeos-keyring, lifeos-folio, linux-lifeos, refind-lifeos, lifeos-ofis, lifeos-muzik, lifeos-zsh, calamares, orchis-kde-theme, win11-icon-theme, pardus-idevice-mounter, lifeos-sacmalik)'
         required: true
       ref:
         description: "LifeOSLinux'ta etiket ya da dal (ör. lifeos-v0.1.0-7)"
@@ -81,6 +81,9 @@ jobs:
           paket=$PAKET; surum=
           [[ $REF == "$paket-v"* ]] && surum=${REF##*-v}
           [[ $paket =~ ^[a-z0-9-]+$ && -f packaging/$paket/PKGBUILD ]] || { echo "::error::packaging/$paket/PKGBUILD yok"; exit 1; }
+          if grep -qx '# lifeos: depoya konmaz' "packaging/$paket/PKGBUILD"; then
+            echo "::error::$paket herkese açık depoya konamaz (dağıtım izni yok); Mağaza onu makinede derler"; exit 1
+          fi
           python3 tools/surum.py || { echo "::error::Kaynaktaki sürüm ile PKGBUILD tutmuyor"; exit 1; }
           pkgver=$(sed -n 's/^pkgver=//p' "packaging/$paket/PKGBUILD"); pkgrel=$(sed -n 's/^pkgrel=//p' "packaging/$paket/PKGBUILD")
           if [[ -n $surum && $surum != "$pkgver" && $surum != "$pkgver-$pkgrel" ]]; then
