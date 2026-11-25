@@ -154,8 +154,20 @@ jobs:
             sudo -u derleyici env LIFEOS_HESAP_CREDENTIAL_DIR="$LIFEOS_HESAP_CREDENTIAL_DIR" makepkg --syncdeps --noconfirm --cleanbuild --nocheck
             python3 ../../tools/hesap_credentials.py --verify-package "$(realpath "$(find . -maxdepth 1 -name '*.pkg.tar.zst' -print -quit)")"
           else
-            sudo -u derleyici env LIFEOS_PLAYER_KEY_FILE="${LIFEOS_PLAYER_KEY_FILE:-}" LIFEOS_SB_KEY="${LIFEOS_SB_KEY:-}" \
-              LIFEOS_SB_CERT="${LIFEOS_SB_CERT:-}" SRCDEST="${SRCDEST:-}" makepkg --syncdeps --noconfirm --cleanbuild --nocheck
+            # A package that only lays out files (no build(): the LifeOS apps, themes, keyring…) needs its makedepends,
+            # not the 1.5 GB of runtime dependencies --syncdeps downloaded for every one (25.11.2026: 2.5 of 4 minutes a
+            # package). Those get their makedepends and --nodeps; one that fails so is built as before, with --syncdeps.
+            deps=--syncdeps
+            if ! grep -qE '^build\(\)' PKGBUILD; then
+              mapfile -t make < <(sudo -u derleyici makepkg --printsrcinfo | sed -n 's/^\tmakedepends = //p')
+              (( ${#make[@]} == 0 )) || pacman -S --needed --noconfirm "${make[@]}"
+              deps=--nodeps
+            fi
+            derle() {
+              sudo -u derleyici env LIFEOS_PLAYER_KEY_FILE="${LIFEOS_PLAYER_KEY_FILE:-}" LIFEOS_SB_KEY="${LIFEOS_SB_KEY:-}" \
+                LIFEOS_SB_CERT="${LIFEOS_SB_CERT:-}" SRCDEST="${SRCDEST:-}" makepkg "$1" --noconfirm --cleanbuild --nocheck
+            }
+            derle "$deps" || { [[ $deps == --nodeps ]] && echo "::warning::--nodeps ile olmadı; --syncdeps ile yeniden" && derle --syncdeps; }
           fi
           ls -l ./*.pkg.tar.zst
 
