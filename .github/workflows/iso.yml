@@ -51,7 +51,7 @@ jobs:
         # No pacman download timeout: GitHub's release downloads sometimes wait ten seconds before the first byte.
         run: |
           grep -q '^DisableDownloadTimeout' /etc/pacman.conf || sed -i '/^\[options\]/a DisableDownloadTimeout' /etc/pacman.conf
-          pacman -Syu --noconfirm --needed archiso git github-cli python sudo mtools sbsigntools openssl rclone
+          pacman -Syu --noconfirm --needed archiso git github-cli python sudo mtools sbsigntools openssl rclone grub
 
       - uses: actions/checkout@v4
         with:
